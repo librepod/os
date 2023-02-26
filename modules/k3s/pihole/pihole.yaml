@@ -1,0 +1,15 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: pihole
+  namespace: librepod-system
+spec:
+  chart: "https://github.com/librepod/charts/releases/download/pihole-3.2.0/pihole-3.2.0.tgz"
+  targetNamespace: librepod-system
+  valuesContent: |-
+    hostIP: "{{hostIP}}"
+    image:
+      repository: "{{imageRepository}}"
+    unbound:
+      image:
+        repository: "{{unboundImageRepository}}"

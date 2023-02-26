@@ -1,0 +1,16 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: nfs-provisioner
+  namespace: librepod-system
+spec:
+  chart: "https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner/releases/download/nfs-subdir-external-provisioner-4.0.17/nfs-subdir-external-provisioner-4.0.17.tgz"
+  targetNamespace: librepod-system
+  valuesContent: |-
+    nfs:
+      server: "{{hostIP}}"
+      path: "/exports/k3s"
+    storageClass:
+      defaultClass: true
+      # Comment out pathPattern to use default value
+      pathPattern: "${.PVC.namespace}/${.PVC.name}"

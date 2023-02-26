@@ -1,0 +1,8 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: filebrowser
+  namespace: librepod-system
+spec:
+  chart: "https://github.com/librepod/charts/releases/download/filebrowser-1.0.0/filebrowser-1.0.0.tgz"
+  targetNamespace: librepod-system

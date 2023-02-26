@@ -1,0 +1,61 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: kubeapps
+  namespace: kube-system
+spec:
+  chart: kubeapps
+  repo: "https://charts.bitnami.com/bitnami"
+  targetNamespace: kube-system
+  version: 7.7.2
+  valuesContent: |-
+    ingress:
+      enabled: true
+      annotations:
+        kubernetes.io/ingress.class: nginx
+      hostname: "apps.{{domain}}"
+    postgresql:
+      image:
+        repository: postgres
+        tag: 11
+      replication:
+        enabled: false
+      global:
+        postgresql:
+          postgresqlUsername: postgres
+          postgresqlPassword: somepassword
+      postgresqlPassword: somepassword
+      postgresqlDataDir: /data/pgdata
+      persistence:
+        enabled: true
+        size: 8Gi
+        mountPath: /data/
+        storageClass: nfs-client
+    frontend:
+      image:
+        repository: nginxinc/nginx-unprivileged
+        tag: "1.20"
+    dashboard:
+      image:
+        repository: cyxou/kubeapps-dashboard
+        tag: dev-2022-02-10T19-51-02-UTC
+    apprepository:
+      image:
+        repository: cyxou/kubeapps-apprepository-controller
+        tag: dev-2022-02-10T19-45-32-UTC
+      syncImage:
+        repository: cyxou/kubeapps-asset-syncer
+        tag: dev-2022-02-10T19-46-30-UTC
+      initialRepos:
+        - name: cheeba-ryba
+          url: https://cheeba-ryba.github.io/charts
+    kubeops:
+      image:
+        repository: cyxou/kubeapps-kubeops
+        tag: dev-2022-02-10T19-45-54-UTC
+      readinessProbe:
+        enabled: false
+    kubeappsapis:
+      image:
+        repository: cyxou/kubeapps-kubeapps-apis
+        tag: dev-2022-02-10T19-47-06-UTC

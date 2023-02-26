@@ -1,0 +1,17 @@
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: forecastle
+  namespace: librepod-system
+spec:
+  entryPoints:
+    - web
+    - websecure
+  routes:
+    - kind: Rule
+      match: Host(`libre.pod`)
+      services:
+      - name: forecastle
+        passHostHeader: true
+        port: 80

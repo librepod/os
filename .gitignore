@@ -1,0 +1,10 @@
+Session.vim
+machine.txt
+authorizedKey.pub
+authorized_keys
+
+image-builders/output
+
+# Archives
+*.tar.gz
+machine-ip.txt
