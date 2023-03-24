@@ -3,6 +3,7 @@ let
   # Generated once with `systemd-id128 -p new` command
   librepodAppKey = "b68d956f085444af8be05da0602bc9c3";
   generateFrpcConfig = pkgs.writeShellScriptBin "genFrpcConfig" ''
+  relayServer = "relay.librepod.org";
     #!${pkgs.runtimeShell} -eu
 
     export PATH=${pkgs.lib.makeBinPath [ config.nix.package pkgs.systemd pkgs.k3s pkgs.gawk pkgs.curl pkgs.kubernetes-helm ]}:$PATH
@@ -18,6 +19,7 @@ let
     hashedMachineId=$(systemd-id128 machine-id --app-specific=${librepodAppKey})
     remotePort=${machineConfig.relayRemotePort}
     hostIP=${machineConfig.hostIP}
+    relayServer=${relayServer}
 
     # @TODO Update this logic once we have an frp proxy registration backend:
     # See: https://github.com/orgs/librepod/projects/2/views/2?pane=issue&itemId=17580704
@@ -28,7 +30,7 @@ let
     # else
     cat << EOF > /tmp/frpc.ini
 [common]
-server_addr = ru.relay.librepod.org
+server_addr = $relayServer
 server_port = 7000
 authentication_method = token
 token = ALOHA
@@ -53,7 +55,7 @@ EOF
 
     helm upgrade --kubeconfig /etc/rancher/k3s/k3s.yaml \
       --set hostIP=$hostIP \
-      --set wgHost=relay.librepod.org \
+      --set wgHost=$relayServer \
       --set wgPort=$remotePort \
       -n librepod-system \
       wg-easy \
