@@ -14,7 +14,6 @@
   };
 
   environment.systemPackages = with pkgs; [
-    frp
     gawk
     git
     gnumake
@@ -26,7 +25,6 @@
 
   imports = [
     (import ./ca-certs.nix { inherit config pkgs machineConfig; })
-    (import ./frpc-config.nix { inherit config pkgs machineConfig; })
   ];
 
   # Always specify a system state version that matches the starting version of
