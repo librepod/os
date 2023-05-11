@@ -5,7 +5,6 @@ let
     hostIP = args.hostIP or lib.strings.fileContents ../../machine-ip.txt;
     networkInterfaceName = "enp1s0";
     domain = "libre.pod";
-    relayRemotePort = ""; # set to empty string to fetch frpc config from the relay
     k3sExtraFlags = [ ];
     pihole = {
       enable = true;
