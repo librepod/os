@@ -12,6 +12,16 @@ spec:
   # set:
   #   global.systemDefaultRegistry: ""
   valuesContent: |-
+    logs:
+      general:
+        # By default, the logs use a text format (common), but you can
+        # also ask for the json format in the format option
+        # format: json
+        # By default, the level is set to ERROR. Alternative logging levels are DEBUG, PANIC, FATAL, ERROR, WARN, and INFO.
+        level: INFO
+      access:
+        # To enable access logs
+        enabled: true
     ingressRoute:
       dashboard:
         enabled: false
@@ -59,6 +69,16 @@ spec:
         port: 21027
         expose: true
         exposedPort: 21027
+        protocol: UDP
+      proxy:
+        port: 1080
+        expose: true
+        exposedPort: 1080
+        protocol: TCP
+      proxy-udp:
+        port: 1080
+        expose: true
+        exposedPort: 1080
         protocol: UDP
     podAnnotations:
       prometheus.io/port: "8082"

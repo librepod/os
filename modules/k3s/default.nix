@@ -23,11 +23,12 @@ in
   # Allow some ports
   # 53 - DNS
   # 80,443 - http, https
+  # 1080 - xray/v2ray proxy port
   # 6443 - Kubernetes API Server
   # 10250	- Kubelet metrics
   # 22000 - Syncthing ports (both TCP and UDP)
   # 7400 - frpc admin port
-  networking.firewall.allowedTCPPorts = [ 53 80 443 6443 10250 22000 7400 ];
+  networking.firewall.allowedTCPPorts = [ 53 80 443 1080 6443 10250 22000 7400 ];
   networking.firewall.allowedUDPPorts = [ 53 51820 22000 ];
 
   environment.systemPackages = [ pkgs.k3s ];
