@@ -15,6 +15,9 @@ spec:
     ingressRoute:
       dashboard:
         enabled: false
+        entryPoints:
+          - traefik
+          - websecure
     experimental:
       http3:
         enabled: true
