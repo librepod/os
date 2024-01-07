@@ -5,7 +5,9 @@ let
     hostIP = args.hostIP or lib.strings.fileContents ../../machine-ip.txt;
     networkInterfaceName = "enp0s3";
     domain = "libre.pod";
-    k3sExtraFlags = "--disable local-storage";
+    # Disabling local-storage since we are going to use nfs and nfs-provisioner
+    # Disabling traefik since we are going to deploy and configure it with argocd
+    k3sExtraFlags = "--disable=local-storage --disable=traefik";
     argocd.enable = true;
   };
 in
