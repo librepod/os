@@ -1,9 +1,9 @@
-{ pkgs, config, ... }:
+{ pkgs, config, lib, ... }:
 
 {
   services.openssh = {
     enable = true;
-    banner = ''
+    banner = lib.mkDefault ''
  _     _  _               ___          _
 | |   (_)| |__  _ _  ___ | _ \ ___  __| |
 | |__ | ||  _ \| '_|/ -_)|  _// _ \/ _` |

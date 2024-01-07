@@ -24,6 +24,17 @@ in
   ];
 
   services.frpc.enable = true;
+  services.openssh = {
+    # Banner has been generated here:
+    # http://www.patorjk.com/software/taag/#p=display&f=Small&t=Beelink%20SEi8
+    banner = ''
+  ___          _ _      _     ___ ___ _ ___ 
+ | _ ) ___ ___| (_)_ _ | |__ / __| __(_| _ )
+ | _ \/ -_) -_) | | ' \| / / \__ \ _|| / _ \
+ |___/\___\___|_|_|_||_|_\_\ |___/___|_\___/
+
+    '';
+  };
 
   networking.hostName = machineConfig.hostName;
   networking.interfaces."${machineConfig.networkInterfaceName}".useDHCP = true;
