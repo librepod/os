@@ -10,8 +10,10 @@
 |____||_||____/|_|  \___||_|  \___/\__/_|
 
     '';
-    permitRootLogin = "yes";
-    passwordAuthentication = true;
+    settings = {
+      PermitRootLogin = "yes";
+      PasswordAuthentication = true;
+    };
     extraConfig = ''
       AuthenticationMethods publickey password
     '';
