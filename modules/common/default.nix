@@ -18,6 +18,7 @@
     git
     gnumake
     jq
+    kitty
     kubernetes-helm
     mkcert
     neovim

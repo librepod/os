@@ -1,0 +1,183 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd
+
+---
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: argocd
+  namespace: librepod-system
+spec:
+  repo: https://argoproj.github.io/argo-helm
+  chart: argo-cd
+  targetNamespace: argocd
+  valuesContent: |-
+    # https://github.com/argoproj/argo-helm/blob/main/charts/argo-cd/values.yaml
+    dex:
+      enabled: false
+
+    configs:
+      cm:
+        timeout.reconciliation: 30s
+      params:
+        # Delegating TLS to traefik:
+        server.insecure: true
+
+      secret:
+        # Bcrypt hashed admin password
+        # Argo expects the password in the secret to be bcrypt hashed. You can create this hash with
+        # `htpasswd -nbBC 10 "" admin | tr -d ':\n' | sed 's/$2y/$2a/'`
+        argocdServerAdminPassword: "$2a$10$QnA0qfPEMOWK7gxvcL/oLuExJT1mA4KpOY7ASutCBEVFl7.fVqrvq"
+
+    server:
+      # https://argo-cd.readthedocs.io/en/stable/operator-manual/ingress/#traefik-v22
+      ingress:
+        enabled: false
+
+---
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: argocd-apps
+  namespace: librepod-system
+spec:
+  repo: https://argoproj.github.io/argo-helm
+  chart: argocd-apps
+  targetNamespace: argocd
+  valuesContent: |-
+    # -- Deploy Argo CD Applications within this helm release
+    # @default -- `[]` (See [values.yaml])
+    ## Ref: https://github.com/argoproj/argo-cd/blob/master/docs/operator-manual/
+
+    # -- Deploy Argo CD Projects within this helm release
+    # @default -- `[]` (See [values.yaml])
+    ## Ref: https://github.com/argoproj/argo-cd/blob/master/docs/operator-manual/
+    projects: 
+      - name: librepod-apps
+        namespace: argocd
+        additionalAnnotations:
+          argocd.argoproj.io/sync-options: PruneLast=true
+          argocd.argoproj.io/sync-wave: "-2"
+        clusterResourceWhitelist:
+        - group: '*'
+          kind: '*'
+        description: User installed LibrePod applications
+        destinations:
+        - namespace: '*'
+          server: https://kubernetes.default.svc
+        namespaceResourceWhitelist:
+        - group: '*'
+          kind: '*'
+        sourceRepos:
+          - https://github.com/librepod/charts
+
+      - name: librepod-system
+        namespace: argocd
+        additionalAnnotations:
+          argocd.argoproj.io/sync-options: PruneLast=true
+          argocd.argoproj.io/sync-wave: "-2"
+        clusterResourceWhitelist:
+        - group: '*'
+          kind: '*'
+        description: LibrePod cluster-wide system applications
+        destinations:
+        - namespace: '*'
+          server: https://kubernetes.default.svc
+        namespaceResourceWhitelist:
+        - group: '*'
+          kind: '*'
+        sourceRepos:
+        - https://github.com/librepod/charts
+
+    applications:
+      - name: librepod-system
+        namespace: argocd
+        destination:
+          server: https://kubernetes.default.svc
+        ignoreDifferences:
+        - group: argoproj.io
+          jsonPointers:
+          - /status
+          kind: Application
+        project: librepod-system
+        sources:
+          - repoURL: https://github.com/librepod/charts
+            targetRevision: switch-to-argocd
+            path: apps/traefik
+          - repoURL: https://github.com/librepod/charts
+            targetRevision: switch-to-argocd
+            path: apps/nfs-provisioner
+          - repoURL: https://github.com/librepod/charts
+            targetRevision: switch-to-argocd
+            path: apps/wg-easy
+          - repoURL: https://github.com/librepod/charts
+            targetRevision: switch-to-argocd
+            path: apps/homepage
+        syncPolicy:
+          automated:
+            allowEmpty: true
+            prune: true
+            selfHeal: true
+          syncOptions:
+            - CreateNamespace=true
+
+    # -- Deploy Argo CD ApplicationSets within this helm release
+    # @default -- `[]` (See [values.yaml])
+    ## Ref: https://argo-cd.readthedocs.io/en/stable/operator-manual/applicationset/
+    applicationsets:
+      - name: librepod-apps
+        namespace: argocd
+        additionalLabels: {}
+        additionalAnnotations: {}
+        generators:
+        - git:
+            repoURL: https://github.com/librepod/charts
+            revision: switch-to-argocd
+            files:
+              - path: apps/**/home/config.json
+            requeueAfterSeconds: 20
+            template:
+              metadata: {}
+              spec:
+                destination: {}
+                project: ""
+                source:
+                  repoURL: ""
+        syncPolicy: {}
+        template:
+          metadata:
+            labels:
+              app.kubernetes.io/name: '{{ appName }}'
+            name: '{{ userGivenName }}'
+            namespace: argocd
+          spec:
+            destination:
+              namespace: '{{ userGivenName }}'
+              server: https://kubernetes.default.svc
+            ignoreDifferences:
+            - group: argoproj.io
+              jsonPointers:
+              - /status
+              kind: Application
+            project: librepod-apps
+            source:
+              path: '{{ srcPath }}'
+              repoURL: https://github.com/librepod/charts
+              targetRevision: switch-to-argocd
+            syncPolicy:
+              syncOptions:
+                - CreateNamespace=true
+              automated:
+                prune: true
+                allowEmpty: true
+                selfHeal: true
+
+    # -- Deploy Argo UI Extensions within this helm release
+    # @default -- `[]` (See [values.yaml])
+    ## This function in tech preview stage, do expect unstability or breaking changes in newer versions. Bump image.tag if necessary.
+    ## Ref: https://github.com/argoproj-labs/argocd-extensions
+    extensions: []
+    xtensions: []
