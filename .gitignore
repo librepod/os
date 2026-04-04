@@ -1,0 +1,21 @@
+# Personal files (should live in consumer repo)
+authorized_keys
+authorizedKey.pub
+*.config
+CLAUDE.md
+machine-ip.txt
+
+# Nix
+result
+result-*
+
+# Editor/IDE
+Session.vim
+.direnv
+.envrc
+
+# Archives
+*.tar.gz
+
+# Claude Code
+/.claude/settings.local.json
