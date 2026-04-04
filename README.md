@@ -1,0 +1,87 @@
+# LibrePod OS
+
+A NixOS module library for self-hosted home infrastructure — K3S Kubernetes clusters, FRP tunneling, NFS storage, automated backups, and more.
+
+## Quick Start
+
+Add LibrePod as a flake input in your `flake.nix`:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    librepod.url = "github:librepod/librepod";
+  };
+
+  outputs = { self, nixpkgs, librepod, ... }@inputs: {
+    nixosConfigurations.my-machine = librepod.lib.mkNixosConfig {
+      path = ./machines/my-machine;
+      inputs = inputs;
+    };
+  };
+}
+```
+
+Then configure your machine:
+
+```nix
+# machines/my-machine/default.nix
+{ config, lib, pkgs, ... }:
+{
+  imports = [
+    ./hardware-configuration.nix
+  ];
+
+  # Required: set user credentials
+  librepod.users = {
+    root.hashedPassword = "$6$...";  # mkpasswd -m sha-512
+    root.sshKeys = [ "ssh-ed25519 AAAA..." ];
+    normalUser.hashedPassword = "$6$...";
+  };
+}
+```
+
+## Available Modules
+
+| Module | Description |
+|--------|-------------|
+| `common` | Base system (zsh/grml, neovim, git, jq, NTP) |
+| `users` | User management with `librepod.users` options |
+| `ssh` | OpenSSH server with banner |
+| `networking` | IPv6 disabled, DHCP defaults |
+| `nix` | Nix GC, store optimization |
+| `disko` | GPT + LVM disk partitioning |
+| `k3s` | K3S Kubernetes server (pinned version) |
+| `frpc` | FRP tunnel client with `librepod.frpc` options |
+| `dns-server` | Unbound DNS for local domains |
+| `nfs` | NFS server for K3S persistent volumes |
+| `duplicati` | Automated PVC backups with Duplicati |
+| `gobackup` | Declarative backup with GoBackup |
+| `casdoor` | Casdoor IAM CLI |
+| `gitolite` | Git repository hosting with Flux integration |
+| `usb-automount` | USB drive auto-mount (standalone or via `common`) |
+
+## Device Profiles
+
+Hardware profiles for supported devices:
+
+- **`devices/lenovo-m710q/`** — Lenovo ThinkCentre M710Q Tiny
+- **`devices/virtualbox-vm/`** — VirtualBox VM (for testing)
+
+## Installation
+
+**Bare metal (via nixos-anywhere):**
+
+```bash
+nix run github:nix-community/nixos-anywhere -- --flake .#my-machine root@<ip>
+```
+
+**Existing Linux (via nixos-infect):**
+
+```bash
+curl https://raw.githubusercontent.com/librepod/librepod-install/master/librepod-install | bash -x
+```
+
+## License
+
+GNU General Public License v3.0 — see [LICENSE](LICENSE).
