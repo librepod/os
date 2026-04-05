@@ -62,6 +62,7 @@ log_warning() {
 
 # Attempt to repair a Duplicati backup that failed due to missing remote files.
 # Repair chain: purge-broken-files → repair → retry backup.
+# Last resort: if remote is completely empty, delete stale database and retry.
 # Returns 0 if backup retry succeeds, non-zero otherwise.
 repair_and_retry() {
   local target="$1"
@@ -72,9 +73,6 @@ repair_and_retry() {
   log_warning "Attempting auto-repair for: $name"
 
   # Step 1: Purge broken files (removes unrecoverable file versions from DB)
-  # This must come first — repair --rebuild-missing-dblock-files uploads
-  # partial/corrupt index files when source blocks aren't available, which
-  # makes subsequent purge and repair steps fail.
   log_info "Repair step 1: Purging broken files..."
   duplicati-cli purge-broken-files "$target" \
     --dbpath="$db_path" \
@@ -90,7 +88,8 @@ repair_and_retry() {
 
   # Step 3: Retry backup after repair
   log_info "Retrying backup after repair: $name"
-  duplicati-cli backup "$target" "$source" \
+  local retry_output
+  retry_output=$(duplicati-cli backup "$target" "$source" \
     --backup-name="$name" \
     --backup-id="k3s-pvc-$name" \
     --dbpath="$db_path" \
@@ -99,7 +98,37 @@ repair_and_retry() {
     --retention-policy="$RETENTION_POLICY" \
     $ENCRYPTION \
     --disable-module=console-password-input \
-    2>&1
+    2>&1) && local retry_exit=$? || local retry_exit=$?
+
+  echo "$retry_output"
+
+  if [ "$retry_exit" -eq 0 ]; then
+    return 0
+  fi
+
+  # Step 4 (last resort): If remote is completely empty, the database is entirely
+  # stale — all referenced files are gone. Delete it so Duplicati starts fresh.
+  local target_dir="${target#file://}"
+  target_dir="${target_dir%/}"
+  if [ -d "$target_dir" ] && [ -z "$(ls -A "$target_dir" 2>/dev/null)" ]; then
+    log_warning "Remote backup directory is empty — deleting stale database: $db_path"
+    rm -f "$db_path"
+
+    log_info "Retrying backup with fresh database: $name"
+    duplicati-cli backup "$target" "$source" \
+      --backup-name="$name" \
+      --backup-id="k3s-pvc-$name" \
+      --dbpath="$db_path" \
+      --compression-module="$COMPRESSION_MODULE" \
+      --dblock-size="$DBLOCK_SIZE" \
+      --retention-policy="$RETENTION_POLICY" \
+      $ENCRYPTION \
+      --disable-module=console-password-input \
+      2>&1
+    return $?
+  fi
+
+  return "$retry_exit"
 }
 
 # ============================================================================
