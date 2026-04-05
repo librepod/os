@@ -61,7 +61,7 @@ log_warning() {
 # ============================================================================
 
 # Attempt to repair a Duplicati backup that failed due to missing remote files.
-# Repair chain: repair (rebuild dblocks) → purge-broken-files → repair → retry backup.
+# Repair chain: purge-broken-files → repair → retry backup.
 # Returns 0 if backup retry succeeds, non-zero otherwise.
 repair_and_retry() {
   local target="$1"
@@ -71,31 +71,24 @@ repair_and_retry() {
 
   log_warning "Attempting auto-repair for: $name"
 
-  # Step 1: Repair with --rebuild-missing-dblock-files (rebuilds from source data)
-  # Best effort — may partially succeed. Errors are non-fatal; subsequent steps handle leftovers.
-  log_info "Repair step 1: Rebuilding missing dblock files..."
-  duplicati-cli repair "$target" \
-    --dbpath="$db_path" \
-    $ENCRYPTION \
-    --disable-module=console-password-input \
-    --rebuild-missing-dblock-files 2>&1 || true
-
-  # Step 2: Purge broken files (removes unrecoverable file versions)
-  # Harmless no-op when there's nothing to purge.
-  log_info "Repair step 2: Purging broken files..."
+  # Step 1: Purge broken files (removes unrecoverable file versions from DB)
+  # This must come first — repair --rebuild-missing-dblock-files uploads
+  # partial/corrupt index files when source blocks aren't available, which
+  # makes subsequent purge and repair steps fail.
+  log_info "Repair step 1: Purging broken files..."
   duplicati-cli purge-broken-files "$target" \
     --dbpath="$db_path" \
     $ENCRYPTION \
     --disable-module=console-password-input 2>&1 || true
 
-  # Step 3: Repair again after purge (fixes DB inconsistencies)
-  log_info "Repair step 3: Final repair after purge..."
+  # Step 2: Repair database to fix inconsistencies left by the purge
+  log_info "Repair step 2: Repairing database..."
   duplicati-cli repair "$target" \
     --dbpath="$db_path" \
     $ENCRYPTION \
     --disable-module=console-password-input 2>&1 || true
 
-  # Step 4: Retry backup after repair
+  # Step 3: Retry backup after repair
   log_info "Retrying backup after repair: $name"
   duplicati-cli backup "$target" "$source" \
     --backup-name="$name" \
