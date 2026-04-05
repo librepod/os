@@ -88,6 +88,7 @@ repair_and_retry() {
 
   # Step 3: Retry backup after repair
   log_info "Retrying backup after repair: $name"
+  local retry_exit=0
   local retry_output
   retry_output=$(duplicati-cli backup "$target" "$source" \
     --backup-name="$name" \
@@ -98,7 +99,7 @@ repair_and_retry() {
     --retention-policy="$RETENTION_POLICY" \
     $ENCRYPTION \
     --disable-module=console-password-input \
-    2>&1) && local retry_exit=$? || local retry_exit=$?
+    2>&1) || retry_exit=$?
 
   echo "$retry_output"
 
