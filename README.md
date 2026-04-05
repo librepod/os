@@ -1,6 +1,8 @@
 # LibrePod OS
 
-A NixOS module library for self-hosted home infrastructure — K3S Kubernetes clusters, FRP tunneling, NFS storage, automated backups, and more.
+LibrePod OS is the **OS/firmware layer** for [LibrePod Marketplace](https://github.com/librepod/marketplace) — an OCI-based app marketplace for self-hosted Kubernetes clusters. LibrePod OS provisions the bare-metal node (disk, networking, K3S, DNS, NFS, backups, tunneling) so that FluxCD can bootstrap the marketplace atop it.
+
+The marketplace deploys system infrastructure (Traefik, cert-manager, Gogs, Casdoor SSO, NFS provisioner) via OCI artifacts, then users install apps (Vaultwarden, open-webui, Seafile, etc.) git-first through a private Gogs repo on the cluster. This repo handles everything *below* the Kubernetes layer; the marketplace repo handles everything *above* it.
 
 ## Quick Start
 
