@@ -2,9 +2,11 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
 
-    # Pin k3s to a specific version by using a specific nixpkgs commit.
-    # To update: find the commit at
-    # https://github.com/NixOS/nixpkgs/commits/master/pkgs/applications/networking/cluster/k3s
+    # INFO: Pin k3s to a specific version by using a specific nixpkgs commit
+    # To update k3s version, find a nixpkgs commit with the desired k3s version:
+    # 1. Go to https://github.com/NixOS/nixpkgs/commits/master/pkgs/applications/networking/cluster/k3s
+    # 2. Find the commit that has your desired version
+    # 3. Update the URL below with that commit
     k3s-nixpkgs.url = "github:NixOS/nixpkgs/31a116e3307dca596c4ab20a5372d8540cb6d3fd";
 
     disko = {
@@ -14,6 +16,15 @@
   };
 
   outputs = { self, nixpkgs, k3s-nixpkgs, disko, ... }@inputs: {
+    # Overlay that pins k3s to a specific version via k3s-nixpkgs.
+    # Consumers should apply this overlay to get the pinned k3s version.
+    overlays.default = final: prev: {
+      k3s = (import k3s-nixpkgs {
+        inherit (prev.stdenv) system;
+        config.allowUnfree = false;
+      }).k3s;
+    };
+
     nixosModules = {
       casdoor = import ./modules/casdoor;
       common = import ./modules/common;
@@ -37,14 +48,13 @@
       # Creates a NixOS configuration with standard modules (disko).
       # Args:
       #   path    — path to the machine directory (must contain default.nix)
-      #   inputs  — the consumer's flake inputs (must include nixpkgs, k3s-nixpkgs)
+      #   inputs  — the consumer's flake inputs (must include nixpkgs)
       #   modules — extra NixOS modules (default: [disko])
       mkNixosConfig = { path, inputs, modules ? [ disko.nixosModules.disko ] }:
         inputs.nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
           specialArgs = {
             inherit inputs;
-            inherit (inputs) k3s-nixpkgs;
           };
           modules = modules ++ [ path ];
         };

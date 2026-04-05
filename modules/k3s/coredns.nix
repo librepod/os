@@ -1,15 +1,4 @@
-{ config, pkgs, lib, k3s-nixpkgs ? null, ... }:
-let
-  # Import k3s from a specific nixpkgs commit for version control
-  # This allows you to pin k3s independently of your main nixpkgs channel
-  customK3s = if k3s-nixpkgs != null then
-    (import k3s-nixpkgs {
-      inherit (pkgs.stdenv) system;
-      config.allowUnfree = false;
-    }).k3s
-  else
-    pkgs.k3s;
-in
+{ config, pkgs, lib, ... }:
 {
   # Make CoreDNS resolve libre.pod, librepod.dev, and librepod.local inside the
   # cluster by forwarding those zones to the host's Unbound instance over TCP.
@@ -29,7 +18,7 @@ in
       let
         ip = "${pkgs.iproute2}/bin/ip";
         awk = "${pkgs.gawk}/bin/awk";
-        k3s = "${customK3s}/bin/k3s";
+        k3s = "${pkgs.k3s}/bin/k3s";
       in
       ''
         set -euo pipefail

@@ -1,15 +1,4 @@
-{ config, pkgs, lib, k3s-nixpkgs ? null, ... }:
-let
-  # Import k3s from a specific nixpkgs commit for version control
-  # This allows you to pin k3s independently of your main nixpkgs channel
-  customK3s = if k3s-nixpkgs != null then
-    (import k3s-nixpkgs {
-      inherit (pkgs.stdenv) system;
-      config.allowUnfree = false;
-    }).k3s
-  else
-    pkgs.k3s;
-in
+{ config, pkgs, lib, ... }:
 {
   imports = [
     ./coredns.nix
@@ -28,7 +17,7 @@ in
   services.k3s = {
     enable = true;
     role = "server";
-    package = customK3s;
+    package = pkgs.k3s;
     # Disabling local-storage since we are going to use nfs and nfs-provisioner
     # Disabling traefik since we are going to deploy and configure it with argocd
     extraFlags = "--disable=local-storage --disable=traefik";
@@ -67,5 +56,5 @@ in
   # flux: for GitOps operations
   # jq: for JSON parsing in backup scripts
   # FIXME: Update duplicaty pre- and post- scripts to use flux for stop/start syncing
-  environment.systemPackages = with pkgs; [ customK3s fluxcd jq ];
+  environment.systemPackages = with pkgs; [ k3s fluxcd jq ];
 }
