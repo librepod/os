@@ -55,6 +55,5 @@
   # Add flux CLI and jq for backup scripts
   # flux: for GitOps operations
   # jq: for JSON parsing in backup scripts
-  # FIXME: Update duplicaty pre- and post- scripts to use flux for stop/start syncing
   environment.systemPackages = with pkgs; [ k3s fluxcd jq ];
 }
