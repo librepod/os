@@ -159,8 +159,9 @@ fi
 pvc_count=$(echo "$pvc_list" | wc -l)
 log_info "Found $pvc_count PVC(s) to backup"
 
-# Set up environment for Duplicati (.NET ICU workaround)
+# Set up environment for Duplicati (.NET ICU workaround + disable telemetry)
 export DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
+export USAGEREPORTER_Duplicati_LEVEL=none
 
 # Track statistics
 declare -i backup_success=0

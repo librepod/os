@@ -22,9 +22,9 @@
       enable = lib.mkDefault true;
       interface = "any";  # Allow web UI access from network (default: 127.0.0.1)
       user = "root";
-      # No parameters needed - backups are managed via systemd timer
-      #
-      # TODO: Find a way to opt-out from usage statistics
     };
+
+    # Disable Duplicati usage telemetry on the server service
+    systemd.services.duplicati.environment.USAGEREPORTER_Duplicati_LEVEL = "none";
   };
 }
