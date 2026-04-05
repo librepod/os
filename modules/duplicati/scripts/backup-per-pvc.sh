@@ -72,36 +72,28 @@ repair_and_retry() {
   log_warning "Attempting auto-repair for: $name"
 
   # Step 1: Repair with --rebuild-missing-dblock-files (rebuilds from source data)
+  # Best effort — may partially succeed. Errors are non-fatal; subsequent steps handle leftovers.
   log_info "Repair step 1: Rebuilding missing dblock files..."
-  if duplicati-cli repair "$target" \
+  duplicati-cli repair "$target" \
     --dbpath="$db_path" \
     $ENCRYPTION \
     --disable-module=console-password-input \
-    --rebuild-missing-dblock-files 2>&1; then
-    log_info "Repair step 1 succeeded"
-  else
-    log_warning "Repair step 1 could not rebuild all files, proceeding to purge"
+    --rebuild-missing-dblock-files 2>&1 || true
 
-    # Step 2: Purge broken files (removes unrecoverable file versions)
-    log_info "Repair step 2: Purging broken files..."
-    if ! duplicati-cli purge-broken-files "$target" \
-      --dbpath="$db_path" \
-      $ENCRYPTION \
-      --disable-module=console-password-input 2>&1; then
-      log_error "Purge failed, repair chain unsuccessful"
-      return 1
-    fi
+  # Step 2: Purge broken files (removes unrecoverable file versions)
+  # Harmless no-op when there's nothing to purge.
+  log_info "Repair step 2: Purging broken files..."
+  duplicati-cli purge-broken-files "$target" \
+    --dbpath="$db_path" \
+    $ENCRYPTION \
+    --disable-module=console-password-input 2>&1 || true
 
-    # Step 3: Repair again after purge (fixes DB inconsistencies)
-    log_info "Repair step 3: Final repair after purge..."
-    if ! duplicati-cli repair "$target" \
-      --dbpath="$db_path" \
-      $ENCRYPTION \
-      --disable-module=console-password-input 2>&1; then
-      log_error "Final repair failed"
-      return 1
-    fi
-  fi
+  # Step 3: Repair again after purge (fixes DB inconsistencies)
+  log_info "Repair step 3: Final repair after purge..."
+  duplicati-cli repair "$target" \
+    --dbpath="$db_path" \
+    $ENCRYPTION \
+    --disable-module=console-password-input 2>&1 || true
 
   # Step 4: Retry backup after repair
   log_info "Retrying backup after repair: $name"
