@@ -57,6 +57,67 @@ log_warning() {
 }
 
 # ============================================================================
+# REPAIR FUNCTION
+# ============================================================================
+
+# Attempt to repair a Duplicati backup that failed due to missing remote files.
+# Repair chain: repair (rebuild dblocks) → purge-broken-files → repair → retry backup.
+# Returns 0 if backup retry succeeds, non-zero otherwise.
+repair_and_retry() {
+  local target="$1"
+  local source="$2"
+  local db_path="$3"
+  local name="$4"
+
+  log_warning "Attempting auto-repair for: $name"
+
+  # Step 1: Repair with --rebuild-missing-dblock-files (rebuilds from source data)
+  log_info "Repair step 1: Rebuilding missing dblock files..."
+  if duplicati-cli repair "$target" \
+    --dbpath="$db_path" \
+    $ENCRYPTION \
+    --disable-module=console-password-input \
+    --rebuild-missing-dblock-files 2>&1; then
+    log_info "Repair step 1 succeeded"
+  else
+    log_warning "Repair step 1 could not rebuild all files, proceeding to purge"
+
+    # Step 2: Purge broken files (removes unrecoverable file versions)
+    log_info "Repair step 2: Purging broken files..."
+    if ! duplicati-cli purge-broken-files "$target" \
+      --dbpath="$db_path" \
+      $ENCRYPTION \
+      --disable-module=console-password-input 2>&1; then
+      log_error "Purge failed, repair chain unsuccessful"
+      return 1
+    fi
+
+    # Step 3: Repair again after purge (fixes DB inconsistencies)
+    log_info "Repair step 3: Final repair after purge..."
+    if ! duplicati-cli repair "$target" \
+      --dbpath="$db_path" \
+      $ENCRYPTION \
+      --disable-module=console-password-input 2>&1; then
+      log_error "Final repair failed"
+      return 1
+    fi
+  fi
+
+  # Step 4: Retry backup after repair
+  log_info "Retrying backup after repair: $name"
+  duplicati-cli backup "$target" "$source" \
+    --backup-name="$name" \
+    --backup-id="k3s-pvc-$name" \
+    --dbpath="$db_path" \
+    --compression-module="$COMPRESSION_MODULE" \
+    --dblock-size="$DBLOCK_SIZE" \
+    --retention-policy="$RETENTION_POLICY" \
+    $ENCRYPTION \
+    --disable-module=console-password-input \
+    2>&1
+}
+
+# ============================================================================
 # MAIN BACKUP LOGIC
 # ============================================================================
 
@@ -91,6 +152,7 @@ declare -i backup_success=0
 declare -i backup_failed=0
 declare -i backup_skipped=0
 declare -i backup_no_changes=0
+declare -i backup_repaired=0
 
 # Run pre-backup script (scales down deployments)
 if [ -x "$PRE_BACKUP_SCRIPT" ]; then
@@ -164,10 +226,9 @@ while read -r pvc_namespace pvc_name; do
   #   0 - Success (files changed in backup)
   #   1 - Successful operation, but no files were changed
   #   2 - Successful operation, but with warning(s)
-  #   3+ - Error occurred
+  #   100 - Error occurred
   duplicati_exit_code=0
-
-  if duplicati-cli backup \
+  backup_output=$(duplicati-cli backup \
     "$backup_target" \
     "$backup_source" \
     --backup-name="$backup_id" \
@@ -178,10 +239,26 @@ while read -r pvc_namespace pvc_name; do
     --retention-policy="$RETENTION_POLICY" \
     $ENCRYPTION \
     --disable-module=console-password-input \
-    2>&1; then
-    duplicati_exit_code=$?
-  else
-    duplicati_exit_code=$?
+    2>&1) && duplicati_exit_code=0 || duplicati_exit_code=$?
+
+  # Show backup output in logs
+  echo "$backup_output"
+
+  # Auto-repair on missing remote files (exit 100)
+  if [ "$duplicati_exit_code" -eq 100 ] && echo "$backup_output" | grep -qE "MissingRemoteFiles|MissingDblockFiles"; then
+    repair_output=$(repair_and_retry \
+      "$backup_target" "$backup_source" "$backup_db_path" "$backup_id") && repair_exit=$? || repair_exit=$?
+
+    echo "$repair_output"
+
+    if [ "$repair_exit" -eq 0 ]; then
+      log_success "Backup repaired and completed: $backup_id"
+      backup_repaired=$((backup_repaired + 1))
+      duplicati_exit_code=0
+    else
+      log_error "Auto-repair failed for: $backup_id"
+      duplicati_exit_code=100
+    fi
   fi
 
   # Interpret Duplicati exit code
@@ -228,6 +305,7 @@ log_info "=========================================="
 log_info "Total PVCs discovered: $pvc_count"
 log_info "Successful backups:    $backup_success"
 log_info "No changes:             $backup_no_changes"
+log_info "Repaired:               $backup_repaired"
 log_info "Skipped (no data):      $backup_skipped"
 log_info "Failed:                 $backup_failed"
 log_info "=========================================="
