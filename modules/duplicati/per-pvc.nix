@@ -22,34 +22,24 @@
 { config, pkgs, lib, ... }:
 
 let
-  cfg = config.services.duplicati;
-
   # Pre/post backup scripts (imported from main module)
   preBackupScript = pkgs.writeShellApplication {
     name = "duplicati-pre-backup";
-    runtimeInputs = with pkgs; [ k3s argocd jq coreutils ];
-    text = ''
-      export DUPLICATI_POST_BACKUP_RECONCILE="${cfg.k3sPostBackupReconcile}"
-      export DUPLICATI_SCALE_SNAPSHOT_DIR="/var/lib/duplicati/scale-snapshots"
-      ${builtins.readFile ./scripts/pre-backup.sh}
-    '';
+    runtimeInputs = with pkgs; [ k3s fluxcd jq coreutils ];
+    text = builtins.readFile ./scripts/pre-backup.sh;
   };
 
   postBackupScript = pkgs.writeShellApplication {
     name = "duplicati-post-backup";
-    runtimeInputs = with pkgs; [ k3s argocd jq coreutils ];
-    text = ''
-      export DUPLICATI_POST_BACKUP_RECONCILE="${cfg.k3sPostBackupReconcile}"
-      export DUPLICATI_SCALE_SNAPSHOT_DIR="/var/lib/duplicati/scale-snapshots"
-      ${builtins.readFile ./scripts/post-backup.sh}
-    '';
+    runtimeInputs = with pkgs; [ k3s fluxcd jq coreutils ];
+    text = builtins.readFile ./scripts/post-backup.sh;
   };
 
   # Per-PVC backup script
   # Discovers all PVCs in Kubernetes and creates a separate backup for each one
   perPvcBackupScript = pkgs.writeShellApplication {
     name = "duplicati-backup-per-pvc";
-    runtimeInputs = with pkgs; [ k3s argocd jq coreutils duplicati icu ];
+    runtimeInputs = with pkgs; [ k3s fluxcd jq coreutils duplicati icu ];
     text = builtins.readFile ./scripts/backup-per-pvc.sh;
   };
 
