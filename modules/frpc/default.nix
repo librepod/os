@@ -1,4 +1,9 @@
-{ config, lib, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 
 let
   cfg = config.librepod.frpc;
@@ -45,32 +50,40 @@ in
     };
 
     proxies = lib.mkOption {
-      type = lib.types.listOf (lib.types.submodule {
-        options = {
-          name = lib.mkOption {
-            type = lib.types.str;
-            description = "Proxy name";
+      type = lib.types.listOf (
+        lib.types.submodule {
+          options = {
+            name = lib.mkOption {
+              type = lib.types.str;
+              description = "Proxy name";
+            };
+            type = lib.mkOption {
+              type = lib.types.enum [
+                "tcp"
+                "udp"
+                "http"
+                "https"
+                "stcp"
+              ];
+              description = "Proxy type";
+            };
+            localIp = lib.mkOption {
+              type = lib.types.str;
+              default = "127.0.0.1";
+              description = "Local IP to forward to";
+            };
+            localPort = lib.mkOption {
+              type = lib.types.int;
+              description = "Local port to forward";
+            };
+            remotePort = lib.mkOption {
+              type = lib.types.int;
+              description = "Remote port on FRP server";
+            };
           };
-          type = lib.mkOption {
-            type = lib.types.enum [ "tcp" "udp" "http" "https" "stcp" ];
-            description = "Proxy type";
-          };
-          localIp = lib.mkOption {
-            type = lib.types.str;
-            default = "127.0.0.1";
-            description = "Local IP to forward to";
-          };
-          localPort = lib.mkOption {
-            type = lib.types.int;
-            description = "Local port to forward";
-          };
-          remotePort = lib.mkOption {
-            type = lib.types.int;
-            description = "Remote port on FRP server";
-          };
-        };
-      });
-      default = [];
+        }
+      );
+      default = [ ];
       description = "FRP proxy definitions";
     };
   };
@@ -87,12 +100,20 @@ in
         loginFailExit = false;
         auth.method = cfg.auth.method;
         auth.token = cfg.auth.token;
-      } // lib.optionalAttrs cfg.webServer.enable {
+      }
+      // lib.optionalAttrs cfg.webServer.enable {
         webServer.addr = cfg.webServer.addr;
         webServer.port = cfg.webServer.port;
-      } // lib.optionalAttrs (cfg.proxies != []) {
+      }
+      // lib.optionalAttrs (cfg.proxies != [ ]) {
         proxies = map (p: {
-          inherit (p) name type localIp localPort remotePort;
+          inherit (p)
+            name
+            type
+            localIp
+            localPort
+            remotePort
+            ;
         }) cfg.proxies;
       };
     };

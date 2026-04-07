@@ -1,4 +1,9 @@
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 {
   imports = [
     ./coredns.nix
@@ -34,8 +39,8 @@
     # Auto-deploy charts for K3S
     # https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/services/cluster/k3s/default.nix
     # autoDeployCharts = {
-      # flux-operator = import ./charts/flux-operator.nix;
-      # flux-instance = import ./charts/flux-instance.nix;
+    # flux-operator = import ./charts/flux-operator.nix;
+    # flux-instance = import ./charts/flux-instance.nix;
     # };
   };
 
@@ -46,14 +51,28 @@
   # 6443 - Kubernetes API Server
   # 10250 - Kubelet metrics
   # 7400 - frpc admin port
-  networking.firewall.allowedTCPPorts = [ 80 443 1080 6443 10250 7400 ];
+  networking.firewall.allowedTCPPorts = [
+    80
+    443
+    1080
+    6443
+    10250
+    7400
+  ];
   networking.firewall.allowedUDPPorts = [ 51820 ];
   # networking.firewall.allowedTCPPortRanges = { from = 4000; to = 4007; };
   # networking.firewall.allowedUDPPortRanges = { from = 4000; to = 4007; };
-  networking.firewall.trustedInterfaces = [ "cni0" "flannel.1" ];
+  networking.firewall.trustedInterfaces = [
+    "cni0"
+    "flannel.1"
+  ];
 
   # Add flux CLI and jq for backup scripts
   # flux: for GitOps operations
   # jq: for JSON parsing in backup scripts
-  environment.systemPackages = with pkgs; [ k3s fluxcd jq ];
+  environment.systemPackages = with pkgs; [
+    k3s
+    fluxcd
+    jq
+  ];
 }

@@ -19,7 +19,11 @@
         # Project ships a vendor/ directory — no separate vendor hash needed.
         vendorHash = null;
 
-        ldflags = [ "-s" "-w" "-X main.version=${version}" ];
+        ldflags = [
+          "-s"
+          "-w"
+          "-X main.version=${version}"
+        ];
 
         meta = with lib; {
           description = "Official command-line interface for Casdoor IAM / SSO platform";

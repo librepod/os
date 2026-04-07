@@ -90,49 +90,61 @@ in
       Type = "oneshot";
       RemainAfterExit = true;
     };
-    path = [ pkgs.git pkgs.openssh pkgs.util-linux ];
+    path = [
+      pkgs.git
+      pkgs.openssh
+      pkgs.util-linux
+    ];
     script = ''
-      set -euo pipefail
-      home=/home/${adminUser}
-      sshdir=$home/.ssh
+            set -euo pipefail
+            home=/home/${adminUser}
+            sshdir=$home/.ssh
 
-      # Ensure .ssh dir and admin keypair copy.
-      install -d -m 700 -o ${adminUser} -g users "$sshdir"
-      install -m 600 -o ${adminUser} -g users "${adminKey}"     "$sshdir/gitolite-admin"
-      install -m 644 -o ${adminUser} -g users "${adminKey}.pub" "$sshdir/gitolite-admin.pub"
+            # Ensure .ssh dir and admin keypair copy.
+            install -d -m 700 -o ${adminUser} -g users "$sshdir"
+            install -m 600 -o ${adminUser} -g users "${adminKey}"     "$sshdir/gitolite-admin"
+            install -m 644 -o ${adminUser} -g users "${adminKey}.pub" "$sshdir/gitolite-admin.pub"
 
-      # Write SSH client config (idempotent).
-      cfg=$sshdir/config
-      if ! grep -q "Host gitolite" "$cfg" 2>/dev/null; then
-        cat >> "$cfg" <<'EOF'
+            # Write SSH client config (idempotent).
+            cfg=$sshdir/config
+            if ! grep -q "Host gitolite" "$cfg" 2>/dev/null; then
+              cat >> "$cfg" <<'EOF'
 
-Host gitolite
-  HostName localhost
-  User gitolite
-  IdentityFile ~/.ssh/gitolite-admin
-  StrictHostKeyChecking no
-EOF
-        chown ${adminUser}:users "$cfg"
-        chmod 600 "$cfg"
-      fi
+      Host gitolite
+        HostName localhost
+        User gitolite
+        IdentityFile ~/.ssh/gitolite-admin
+        StrictHostKeyChecking no
+      EOF
+              chown ${adminUser}:users "$cfg"
+              chmod 600 "$cfg"
+            fi
 
-      # Clone cluster-config if not already present.
-      repo=$home/cluster-config
-      if [ ! -d "$repo/.git" ]; then
-        rm -rf "$repo"
-        runuser -u ${adminUser} -- git clone gitolite:cluster-config "$repo"
-      fi
+            # Clone cluster-config if not already present.
+            repo=$home/cluster-config
+            if [ ! -d "$repo/.git" ]; then
+              rm -rf "$repo"
+              runuser -u ${adminUser} -- git clone gitolite:cluster-config "$repo"
+            fi
     '';
   };
 
   # ── Flux K8S secret ───────────────────────────────────────────────────
   systemd.services.gitolite-flux-k8s-secret = {
     description = "Provision gitolite admin key as Kubernetes Secret for Flux";
-    after = [ "gitolite-init.service" "k3s.service" ];
+    after = [
+      "gitolite-init.service"
+      "k3s.service"
+    ];
     requires = [ "gitolite-init.service" ];
     wantedBy = [ "multi-user.target" ];
-    path = [ pkgs.kubectl pkgs.gawk ];
-    environment = { KUBECONFIG = "/etc/rancher/k3s/k3s.yaml"; };
+    path = [
+      pkgs.kubectl
+      pkgs.gawk
+    ];
+    environment = {
+      KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
+    };
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;

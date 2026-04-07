@@ -1,4 +1,9 @@
-{ pkgs, lib, config, ... }:
+{
+  pkgs,
+  lib,
+  config,
+  ...
+}:
 
 let
   cfg = config.librepod.users;
@@ -12,7 +17,7 @@ in
       };
       sshKeys = lib.mkOption {
         type = lib.types.listOf lib.types.str;
-        default = [];
+        default = [ ];
         description = "SSH public keys for root";
       };
     };
@@ -23,7 +28,7 @@ in
       };
       sshKeys = lib.mkOption {
         type = lib.types.listOf lib.types.str;
-        default = [];
+        default = [ ];
         description = "SSH public keys for the normal user";
       };
       extraGroups = lib.mkOption {

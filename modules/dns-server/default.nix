@@ -1,4 +1,9 @@
-{ config, lib, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 
 {
   networking.firewall.allowedTCPPorts = [ 53 ];
@@ -10,34 +15,34 @@
       awk = "${pkgs.gawk}/bin/awk";
     in
     ''
-      set -euo pipefail
+            set -euo pipefail
 
-      # Pick the primary IPv4 used for outbound traffic (works well for multi-NIC too).
-      host_ip="$(${ip} -4 route get 1.1.1.1 2>/dev/null | ${awk} '{for (i=1; i<=NF; i++) if ($i=="src") { print $(i+1); exit }}' || true)"
+            # Pick the primary IPv4 used for outbound traffic (works well for multi-NIC too).
+            host_ip="$(${ip} -4 route get 1.1.1.1 2>/dev/null | ${awk} '{for (i=1; i<=NF; i++) if ($i=="src") { print $(i+1); exit }}' || true)"
 
-      # Fallbacks
-      if [ -z "$host_ip" ] && command -v hostname >/dev/null 2>&1; then
-        host_ip="$(hostname -I 2>/dev/null | ${awk} '{print $1}' || true)"
-      fi
-      if [ -z "$host_ip" ]; then
-        host_ip="127.0.0.1"
-      fi
+            # Fallbacks
+            if [ -z "$host_ip" ] && command -v hostname >/dev/null 2>&1; then
+              host_ip="$(hostname -I 2>/dev/null | ${awk} '{print $1}' || true)"
+            fi
+            if [ -z "$host_ip" ]; then
+              host_ip="127.0.0.1"
+            fi
 
-      install -d -m 0755 /var/lib/unbound
-      cat > /var/lib/unbound/librepod-local.conf <<EOF
-# Answer any name inside libre.pod (e.g. foo.libre.pod) with the same A record.
-local-zone: "libre.pod." redirect
-local-data: "libre.pod. 3600 IN A $host_ip"
+            install -d -m 0755 /var/lib/unbound
+            cat > /var/lib/unbound/librepod-local.conf <<EOF
+      # Answer any name inside libre.pod (e.g. foo.libre.pod) with the same A record.
+      local-zone: "libre.pod." redirect
+      local-data: "libre.pod. 3600 IN A $host_ip"
 
-# Development domain - same behavior, separate namespace to avoid collisions.
-local-zone: "librepod.dev." redirect
-local-data: "librepod.dev. 3600 IN A $host_ip"
+      # Development domain - same behavior, separate namespace to avoid collisions.
+      local-zone: "librepod.dev." redirect
+      local-data: "librepod.dev. 3600 IN A $host_ip"
 
-# mDNS hostname for cluster-internal access (e.g., Flux gitolite SSH).
-local-zone: "librepod.local." redirect
-local-data: "librepod.local. 3600 IN A $host_ip"
-EOF
-      chmod 0644 /var/lib/unbound/librepod-local.conf
+      # mDNS hostname for cluster-internal access (e.g., Flux gitolite SSH).
+      local-zone: "librepod.local." redirect
+      local-data: "librepod.local. 3600 IN A $host_ip"
+      EOF
+            chmod 0644 /var/lib/unbound/librepod-local.conf
     '';
 
   services.unbound = {
@@ -48,7 +53,12 @@ EOF
         # When only using Unbound as DNS, make sure to replace 127.0.0.1 with your ip address
         # When using Unbound in combination with pi-hole or Adguard, leave 127.0.0.1, and point Adguard to 127.0.0.1:PORT
         # Bind on loopback (for local resolvers) and all interfaces (for LAN clients).
-        interface = [ "127.0.0.1" "0.0.0.0" "::1" "::0" ];
+        interface = [
+          "127.0.0.1"
+          "0.0.0.0"
+          "::1"
+          "::0"
+        ];
         port = 53;
         # access-control = [ "0.0.0.0/0 allow" ];
         access-control = [

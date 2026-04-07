@@ -21,7 +21,12 @@
 #     };
 #   };
 
-{ config, lib, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 
 let
   # Import gobackup package
@@ -30,13 +35,21 @@ let
   # Pre/post backup scripts wrapped with writeShellApplication
   k3sPreScript = pkgs.writeShellApplication {
     name = "gobackup-k3s-pre";
-    runtimeInputs = with pkgs; [ k3s jq coreutils ];
+    runtimeInputs = with pkgs; [
+      k3s
+      jq
+      coreutils
+    ];
     text = builtins.readFile ./scripts/k3s-pre-backup.sh;
   };
 
   k3sPostScript = pkgs.writeShellApplication {
     name = "gobackup-k3s-post";
-    runtimeInputs = with pkgs; [ k3s jq coreutils ];
+    runtimeInputs = with pkgs; [
+      k3s
+      jq
+      coreutils
+    ];
     text = builtins.readFile ./scripts/k3s-post-backup.sh;
   };
 
@@ -47,36 +60,46 @@ let
 
   # Generate gobackup YAML configuration from Nix options
   # GoBackup expects YAML format with models as top-level key
-  generateModelConfig = modelName: modelConfig:
+  generateModelConfig =
+    modelName: modelConfig:
     lib.optionalAttrs (modelConfig.beforeScript != null) {
       before_script = "${modelConfig.beforeScript}";
-    } // {
+    }
+    // {
       archive = {
         includes = [ "${modelConfig.sourcePath}" ];
       };
-    } // lib.optionalAttrs (modelConfig.compressWith != null) {
+    }
+    // lib.optionalAttrs (modelConfig.compressWith != null) {
       compress_with = {
         type = modelConfig.compressWith;
       };
-    } // {
+    }
+    // {
       storages = {
         local = {
           type = "local";
           path = "${modelConfig.targetPath}";
         };
       };
-    } // lib.optionalAttrs (modelConfig.afterScript != null) {
+    }
+    // lib.optionalAttrs (modelConfig.afterScript != null) {
       after_script = "${modelConfig.afterScript}";
     };
 
   # Generate complete gobackup.yml content
-  generateGobackupConfig = models: lib.generators.toYAML { } {
-    models = lib.mapAttrs generateModelConfig models;
-  };
+  generateGobackupConfig =
+    models:
+    lib.generators.toYAML { } {
+      models = lib.mapAttrs generateModelConfig models;
+    };
 
-  gobackupConfigFile = pkgs.writeText "gobackup.yml" (generateGobackupConfig config.services.gobackup.models);
+  gobackupConfigFile = pkgs.writeText "gobackup.yml" (
+    generateGobackupConfig config.services.gobackup.models
+  );
 
-in {
+in
+{
   options.services.gobackup = {
     enable = lib.mkEnableOption "gobackup backup service";
 
@@ -88,48 +111,61 @@ in {
     };
 
     models = lib.mkOption {
-      type = lib.types.attrsOf (lib.types.submodule ({ config, name, ... }: {
-        options = {
-          schedule = lib.mkOption {
-            type = lib.types.str;
-            example = "*-*-* 03:00:00";
-            description = "Systemd timer calendar format (see systemd.time(7) for syntax)";
-          };
+      type = lib.types.attrsOf (
+        lib.types.submodule (
+          { config, name, ... }:
+          {
+            options = {
+              schedule = lib.mkOption {
+                type = lib.types.str;
+                example = "*-*-* 03:00:00";
+                description = "Systemd timer calendar format (see systemd.time(7) for syntax)";
+              };
 
-          sourcePath = lib.mkOption {
-            type = lib.types.path;
-            example = "/exports/k3s";
-            description = "Path to archive for backup";
-          };
+              sourcePath = lib.mkOption {
+                type = lib.types.path;
+                example = "/exports/k3s";
+                description = "Path to archive for backup";
+              };
 
-          targetPath = lib.mkOption {
-            type = lib.types.path;
-            example = "/media/USB DISK/librepod-backups";
-            description = "Where to store backups";
-          };
+              targetPath = lib.mkOption {
+                type = lib.types.path;
+                example = "/media/USB DISK/librepod-backups";
+                description = "Where to store backups";
+              };
 
-          compressWith = lib.mkOption {
-            type = lib.types.nullOr (lib.types.enum [ "tar" "tar.gz" "tar.bz2" "tar.xz" "zip" ]);
-            default = "tar.gz";
-            example = "tar.gz";
-            description = "Compression format (null for no compression)";
-          };
+              compressWith = lib.mkOption {
+                type = lib.types.nullOr (
+                  lib.types.enum [
+                    "tar"
+                    "tar.gz"
+                    "tar.bz2"
+                    "tar.xz"
+                    "zip"
+                  ]
+                );
+                default = "tar.gz";
+                example = "tar.gz";
+                description = "Compression format (null for no compression)";
+              };
 
-          beforeScript = lib.mkOption {
-            type = lib.types.nullOr lib.types.path;
-            default = null;
-            example = lib.literalExpression "config.services.gobackup.scripts.k3s-pre";
-            description = "Script to run before backup (e.g., to stop services)";
-          };
+              beforeScript = lib.mkOption {
+                type = lib.types.nullOr lib.types.path;
+                default = null;
+                example = lib.literalExpression "config.services.gobackup.scripts.k3s-pre";
+                description = "Script to run before backup (e.g., to stop services)";
+              };
 
-          afterScript = lib.mkOption {
-            type = lib.types.nullOr lib.types.path;
-            default = null;
-            example = lib.literalExpression "config.services.gobackup.scripts.k3s-post";
-            description = "Script to run after backup (e.g., to restart services)";
-          };
-        };
-      }));
+              afterScript = lib.mkOption {
+                type = lib.types.nullOr lib.types.path;
+                default = null;
+                example = lib.literalExpression "config.services.gobackup.scripts.k3s-post";
+                description = "Script to run after backup (e.g., to restart services)";
+              };
+            };
+          }
+        )
+      );
       default = { };
       description = "Backup model configurations";
     };
@@ -169,7 +205,8 @@ in {
 
     # Create individual services for each backup model
     # Each service gets all required settings including ExecStart with the model name
-    systemd.services = lib.mapAttrs' (modelName: modelConfig:
+    systemd.services = lib.mapAttrs' (
+      modelName: modelConfig:
       lib.nameValuePair "gobackup@${modelName}" {
         description = "GoBackup backup for ${modelName}";
         after = [ "network-online.target" ];
@@ -178,7 +215,14 @@ in {
         unitConfig = {
           ConditionPathIsDirectory = modelConfig.sourcePath;
         };
-        path = with pkgs; [ k3s coreutils jq gnutar bash gzip ];
+        path = with pkgs; [
+          k3s
+          coreutils
+          jq
+          gnutar
+          bash
+          gzip
+        ];
         serviceConfig = {
           Type = "oneshot";
           # Run as root to access K8s API and write to mounted filesystems
@@ -195,13 +239,14 @@ in {
     ) config.services.gobackup.models;
 
     # Create timer for each model
-    systemd.timers = lib.mapAttrs' (modelName: modelConfig:
+    systemd.timers = lib.mapAttrs' (
+      modelName: modelConfig:
       lib.nameValuePair "gobackup-${modelName}" {
         description = "Timer for GoBackup model ${modelName}";
         wantedBy = [ "gobackup.target" ];
         timerConfig = {
           OnCalendar = modelConfig.schedule;
-          Persistent = true;  # Run immediately if last run was missed
+          Persistent = true; # Run immediately if last run was missed
           Unit = "gobackup@${modelName}.service";
         };
       }

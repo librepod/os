@@ -19,19 +19,34 @@
 #   duplicati-cli restore "file:///media/USB DISK/librepod-backups/k3s/<namespace>/<pvc-name>/" \
 #     /exports/k3s/<namespace>/<pvc-name>/ --restore-path=*
 
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 let
   # Pre/post backup scripts (imported from main module)
   preBackupScript = pkgs.writeShellApplication {
     name = "duplicati-pre-backup";
-    runtimeInputs = with pkgs; [ k3s fluxcd jq coreutils ];
+    runtimeInputs = with pkgs; [
+      k3s
+      fluxcd
+      jq
+      coreutils
+    ];
     text = builtins.readFile ./scripts/pre-backup.sh;
   };
 
   postBackupScript = pkgs.writeShellApplication {
     name = "duplicati-post-backup";
-    runtimeInputs = with pkgs; [ k3s fluxcd jq coreutils ];
+    runtimeInputs = with pkgs; [
+      k3s
+      fluxcd
+      jq
+      coreutils
+    ];
     text = builtins.readFile ./scripts/post-backup.sh;
   };
 
@@ -39,16 +54,27 @@ let
   # Discovers all PVCs in Kubernetes and creates a separate backup for each one
   perPvcBackupScript = pkgs.writeShellApplication {
     name = "duplicati-backup-per-pvc";
-    runtimeInputs = with pkgs; [ k3s fluxcd jq coreutils duplicati icu ];
+    runtimeInputs = with pkgs; [
+      k3s
+      fluxcd
+      jq
+      coreutils
+      duplicati
+      icu
+    ];
     text = builtins.readFile ./scripts/backup-per-pvc.sh;
   };
 
   # Backup schedule
-  schedule = "*-*-* 03:15:00";  # Daily at 3:15 AM
+  schedule = "*-*-* 03:15:00"; # Daily at 3:15 AM
 in
 {
   # Make backup scripts available system-wide
-  environment.systemPackages = [ preBackupScript postBackupScript perPvcBackupScript ];
+  environment.systemPackages = [
+    preBackupScript
+    postBackupScript
+    perPvcBackupScript
+  ];
 
   # Per-PVC Backup Service
   # ===========================================
@@ -71,8 +97,14 @@ in
       StandardError = "journal";
     };
     # Only run if k3s is running and network is available
-    wants = [ "k3s.service" "network-online.target" ];
-    after = [ "k3s.service" "network-online.target" ];
+    wants = [
+      "k3s.service"
+      "network-online.target"
+    ];
+    after = [
+      "k3s.service"
+      "network-online.target"
+    ];
   };
 
   # Systemd timer for nightly per-PVC backups
@@ -81,7 +113,7 @@ in
     wantedBy = [ "timers.target" ];
     timerConfig = {
       OnCalendar = schedule;
-      Persistent = true;  # Run immediately if last backup was missed (e.g., system off)
+      Persistent = true; # Run immediately if last backup was missed (e.g., system off)
       Unit = "duplicati-backup-k3s-per-pvc.service";
     };
   };

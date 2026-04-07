@@ -9,7 +9,12 @@
 #
 # Scripts docs: https://docs.duplicati.com/detailed-descriptions/scripts
 
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 {
   imports = [
@@ -20,7 +25,7 @@
     # Enable base Duplicati service with web UI (for monitoring and manual operations)
     services.duplicati = {
       enable = lib.mkDefault true;
-      interface = "any";  # Allow web UI access from network (default: 127.0.0.1)
+      interface = "any"; # Allow web UI access from network (default: 127.0.0.1)
       user = "root";
     };
 

@@ -22,9 +22,9 @@
     description = "Devmon automatic device mounting daemon";
     wantedBy = [ "multi-user.target" ];
     path = [
-      pkgs.udevil   # The devmon automounter
-      pkgs.procps   # Provides 'ps' command
-      pkgs.which    # Provides 'which' command
+      pkgs.udevil # The devmon automounter
+      pkgs.procps # Provides 'ps' command
+      pkgs.which # Provides 'which' command
     ];
     serviceConfig = {
       ExecStart = "${pkgs.udevil}/bin/devmon";

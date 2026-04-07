@@ -1,6 +1,11 @@
 # GoBackup package - fetch pre-built binary from GitHub releases
 #
-{ lib, stdenv, fetchurl, ... }:
+{
+  lib,
+  stdenv,
+  fetchurl,
+  ...
+}:
 
 stdenv.mkDerivation {
   pname = "gobackup";
