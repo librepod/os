@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    paths-ignore:
+      - '*.md'
+      - '.planning/**'
+      - '.gitignore'
+      - LICENSE
+      - shell.nix
+      - justfile
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/determinate-nix-action@v3
+        with:
+          flakehub-cache: true
+
+      - run: nix flake check
+
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/determinate-nix-action@v3
+        with:
+          flakehub-cache: true
+
+      - run: nix fmt -- --check
