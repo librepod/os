@@ -41,4 +41,4 @@ jobs:
         with:
           flakehub-cache: true
 
-      - run: nix fmt -- --check
+      - run: nix fmt -- --ci
