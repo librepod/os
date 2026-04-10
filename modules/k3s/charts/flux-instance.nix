@@ -6,6 +6,9 @@
   hash = "sha256-ytO60lUy9Eurxi2H9jlnmFJH5XAlbZx7BvZfJlClyPo=";
   targetNamespace = "flux-system";
   createNamespace = true;
+  extraDeploy = [
+    ./cosign-pub-secret.yaml
+  ];
   # See default values here: https://fluxoperator.dev/docs/charts/flux-instance/
   values = {
     instance = {
