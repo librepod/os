@@ -38,10 +38,10 @@
     };
     # Auto-deploy charts for K3S
     # https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/services/cluster/k3s/default.nix
-    # autoDeployCharts = {
-    # flux-operator = import ./charts/flux-operator.nix;
-    # flux-instance = import ./charts/flux-instance.nix;
-    # };
+    autoDeployCharts = {
+      flux-operator = import ./charts/flux-operator.nix;
+      flux-instance = import ./charts/flux-instance.nix;
+    };
   };
 
   # Allow some ports
