@@ -6,8 +6,26 @@
   hash = "sha256-ytO60lUy9Eurxi2H9jlnmFJH5XAlbZx7BvZfJlClyPo=";
   targetNamespace = "flux-system";
   createNamespace = true;
+  # Use inline Nix instead of file path to avoid fromYaml call which requires yq-go (Linux-only)
+  # This fixes cross-platform evaluation on Darwin
   extraDeploy = [
-    ./cosign-pub-secret.yaml
+    {
+      apiVersion = "v1";
+      kind = "Secret";
+      metadata = {
+        name = "cosign-pub";
+        namespace = "flux-system";
+      };
+      type = "Opaque";
+      stringData = {
+        "cosign.pub" = ''
+          -----BEGIN PUBLIC KEY-----
+          MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEkAgu26dkUj9UcO0zoEpli4CD8B0p
+          k+YPa1RlIz625eldAwx56argKN0jqdy82pfGor3qZBA++QWwlUrHH9VK7A==
+          -----END PUBLIC KEY-----
+        '';
+      };
+    }
   ];
   # See default values here: https://fluxoperator.dev/docs/charts/flux-instance/
   values = {
