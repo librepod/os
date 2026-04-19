@@ -18,7 +18,6 @@
     ../../modules/nfs
     ../../modules/duplicati
     (import ../../modules/k3s { inherit config pkgs lib; })
-    ../../modules/dns-server
   ];
 
   # Common network interface for all Lenovo M710Qs

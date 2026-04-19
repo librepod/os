@@ -9,11 +9,10 @@
 { pkgs, lib, ... }:
 
 {
-  # ── All 14 modules ──
+  # ── All 13 modules ──
   imports = [
     ../modules/casdoor
     ../modules/common
-    ../modules/dns-server
     ../modules/disko
     ../modules/duplicati
     ../modules/frpc

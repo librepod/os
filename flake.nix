@@ -47,7 +47,6 @@
         casdoor = import ./modules/casdoor;
         common = import ./modules/common;
         disko = ./modules/disko;
-        dns-server = import ./modules/dns-server;
         duplicati = import ./modules/duplicati;
         frpc = import ./modules/frpc;
         gitolite = import ./modules/gitolite;

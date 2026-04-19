@@ -5,9 +5,6 @@
   ...
 }:
 {
-  imports = [
-    ./coredns.nix
-  ];
 
   # INFO: See this on how to reset cluster and start fresh:
   # https://github.com/NixOS/nixpkgs/blob/master/pkgs/applications/networking/cluster/k3s/docs/CLUSTER_UPKEEP.md
