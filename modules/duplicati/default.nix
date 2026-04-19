@@ -27,6 +27,10 @@
       enable = lib.mkDefault true;
       interface = "any"; # Allow web UI access from network (default: 127.0.0.1)
       user = "root";
+      parameters = ''
+        --webservice-password=pass@w0rd
+        --webservice-disable-signin-tokens=true
+      '';
     };
 
     # Disable Duplicati usage telemetry on the server service
