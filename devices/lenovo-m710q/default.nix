@@ -8,6 +8,7 @@
 {
   imports = [
     ./boot.nix
+    ../../modules/amneziawg
     ../../modules/disko
     ../../modules/common
     ../../modules/common/usb-automount.nix
@@ -18,7 +19,6 @@
     ../../modules/nfs
     ../../modules/duplicati
     (import ../../modules/k3s { inherit config pkgs lib; })
-    ../../modules/dns-server
   ];
 
   # Common network interface for all Lenovo M710Qs
