@@ -1,4 +1,4 @@
-{ ... }:
+{ lib, ... }:
 {
   name = "flux";
   repo = "oci://ghcr.io/controlplaneio-fluxcd/charts/flux-instance";
@@ -20,7 +20,7 @@
         interval = "12h";
         kind = "OCIRepository";
         name = "librepod-bootstrap";
-        path = "./clusters/librepod";
+        path = lib.mkDefault "./clusters/librepod";
         ref = "latest"; # TODO: set to a fixed stable version of librepod-bootstrap artifact
         url = "oci://ghcr.io/librepod/marketplace/bootstrap";
       };
