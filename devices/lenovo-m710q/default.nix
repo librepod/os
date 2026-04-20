@@ -8,6 +8,7 @@
 {
   imports = [
     ./boot.nix
+    ../../modules/amneziawg
     ../../modules/disko
     ../../modules/common
     ../../modules/common/usb-automount.nix

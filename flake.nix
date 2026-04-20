@@ -44,6 +44,7 @@
       };
 
       nixosModules = {
+        amneziawg = ./modules/amneziawg;
         casdoor = import ./modules/casdoor;
         common = import ./modules/common;
         disko = ./modules/disko;
