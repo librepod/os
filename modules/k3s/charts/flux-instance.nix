@@ -10,7 +10,9 @@
     ./cosign-pub-secret.yaml
   ];
   # See default values here: https://fluxoperator.dev/docs/charts/flux-instance/
-  values = {
+  # mkDefault allows device configs to override the entire values attrset.
+  # Needed because types.attrs in nixpkgs k3s autoDeployCharts uses shallow merge (//).
+  values = lib.mkDefault {
     instance = {
       distribution = {
         version = "2.8.*";
@@ -20,7 +22,7 @@
         interval = "12h";
         kind = "OCIRepository";
         name = "librepod-bootstrap";
-        path = lib.mkDefault "./clusters/librepod";
+        path = "./clusters/librepod";
         ref = "latest"; # TODO: set to a fixed stable version of librepod-bootstrap artifact
         url = "oci://ghcr.io/librepod/marketplace/bootstrap";
       };
@@ -40,16 +42,6 @@
           }
         ];
       };
-      # -- Kustomize patches https://fluxoperator.dev/docs/crd/fluxinstance/#kustomize-patches
-      # @schema item: string; uniqueItems: true; itemEnum:
-      # [source-controller,kustomize-controller,helm-controller,notification-controller,image-reflector-controller,image-automation-controller,source-watcher]
-      # components = [
-      #   "helm-controller"
-      #   "kustomize-controller"
-      #   "notification-controller"
-      #   "source-controller"
-      #   "source-watcher"
-      # ];
     };
   };
 }
