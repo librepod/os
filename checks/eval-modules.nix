@@ -14,7 +14,7 @@
     ../modules/casdoor
     ../modules/common
     ../modules/disko
-    ../modules/duplicati
+    ../modules/borgmatic
     ../modules/frpc
     ../modules/gitolite
     ../modules/gobackup

@@ -48,7 +48,8 @@
         casdoor = import ./modules/casdoor;
         common = import ./modules/common;
         disko = ./modules/disko;
-        duplicati = import ./modules/duplicati;
+        borgmatic = import ./modules/borgmatic;
+        # duplicati = import ./modules/duplicati;
         frpc = import ./modules/frpc;
         gitolite = import ./modules/gitolite;
         gobackup = import ./modules/gobackup;

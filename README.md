@@ -57,7 +57,7 @@ Then configure your machine:
 | `frpc` | FRP tunnel client with `librepod.frpc` options |
 | `dns-server` | Unbound DNS for local domains |
 | `nfs` | NFS server for K3S persistent volumes |
-| `duplicati` | Automated PVC backups with Duplicati |
+| `borgmatic` | Automated PVC backups with Borgmatic |
 | `gobackup` | Declarative backup with GoBackup |
 | `casdoor` | Casdoor IAM CLI |
 | `gitolite` | Git repository hosting with Flux integration |

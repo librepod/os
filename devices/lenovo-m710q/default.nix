@@ -17,7 +17,7 @@
     ../../modules/ssh
     ../../modules/users
     ../../modules/nfs
-    ../../modules/duplicati
+    ../../modules/borgmatic
     (import ../../modules/k3s { inherit config pkgs lib; })
   ];
 
