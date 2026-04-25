@@ -49,7 +49,7 @@
         common = import ./modules/common;
         disko = ./modules/disko;
         borgmatic = import ./modules/borgmatic;
-        # duplicati = import ./modules/duplicati;
+        duplicati = import ./modules/duplicati;
         frpc = import ./modules/frpc;
         gitolite = import ./modules/gitolite;
         gobackup = import ./modules/gobackup;
