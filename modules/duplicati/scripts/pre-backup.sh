@@ -4,8 +4,9 @@ set -euo pipefail
 #
 # This script prepares the cluster for a consistent backup by:
 # 1. Suspending FluxCD Kustomization reconciliation
-# 2. Scaling down deployments that use PVCs
-# 3. Waiting for pods to terminate
+# 2. Suspending HelmReleases (independent controller from Kustomizations)
+# 3. Scaling down deployments that use PVCs
+# 4. Waiting for pods to terminate
 #
 # After backup completes, the post-backup script resumes Flux reconciliation,
 # which restores all workloads to their desired Git state.
@@ -35,7 +36,31 @@ flux suspend kustomization --all --namespace flux-system || {
 }
 log_info "FluxCD Kustomizations suspended"
 
-# Step 2: Scale down deployments using PVCs
+# Step 2: Suspend HelmReleases
+# HelmRelease controller runs independently of Kustomizations.
+# We must suspend them too, otherwise they may re-create pods we scale down in step 3.
+log_info "Suspending HelmReleases..."
+hr_list=$(k3s kubectl get helmrelease -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
+
+if [ -n "$hr_list" ]; then
+  hr_count=0
+  while read -r hr; do
+    hr_namespace="${hr%%/*}"
+    hr_name="${hr##*/}"
+    [ -z "$hr_namespace" ] || [ -z "$hr_name" ] && continue
+
+    log_info "Suspending HelmRelease: $hr_namespace/$hr_name"
+    flux suspend helmrelease "$hr_name" --namespace "$hr_namespace" 2>/dev/null || {
+      log_error "Failed to suspend HelmRelease: $hr_namespace/$hr_name"
+    }
+    hr_count=$((hr_count + 1))
+  done <<< "$hr_list"
+  log_info "Suspended $hr_count HelmReleases"
+else
+  log_info "No HelmReleases found"
+fi
+
+# Step 3: Scale down deployments using PVCs
 # Query PVCs from Kubernetes API to get correct PVC names
 log_info "Scaling down deployments using PVCs..."
 

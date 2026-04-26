@@ -4,9 +4,9 @@
 # Borg's content-addressed storage enables per-PVC restore via path-based extraction
 # without requiring separate backup jobs per PVC.
 #
-# Pre/post backup hooks suspend/resume FluxCD and scale K8s deployments
-# for consistent snapshots. The hooks use borgmatic's `commands` system
-# (not the deprecated before_backup/after_backup).
+# Pre/post backup hooks suspend/resume FluxCD Kustomizations and HelmReleases,
+# then scale K8s deployments for consistent snapshots.
+# The hooks use borgmatic's `commands` system (not deprecated before_backup/after_backup).
 #
 # To restore a specific PVC:
 #   borgmatic extract --archive latest --restore-path exports/k3s/<namespace>/<pvc-name>/
