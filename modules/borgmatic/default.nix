@@ -5,9 +5,16 @@
 # Borg's content-addressed storage enables per-PVC restore via path-based extraction
 # without requiring separate backup jobs per PVC.
 #
-# Pre/post backup hooks suspend/resume FluxCD Kustomizations and HelmReleases,
+# Pre/post backup hooks suspend/resume HelmReleases and FluxCD Kustomizations,
 # then scale K8s deployments for consistent snapshots.
 # The hooks use borgmatic's `commands` system (not deprecated before_backup/after_backup).
+#
+# Post-backup resumes HelmReleases BEFORE Kustomizations to avoid a circular
+# dependency: bootstrap Jobs (applied by Kustomizations) poll services deployed
+# by HelmReleases. If HelmReleases are still suspended when the Job starts,
+# the Job fails, the Kustomization fails, and the script exits before ever
+# resuming HelmReleases. See post-backup.sh for the full SSA field-ownership
+# explanation.
 #
 # Dynamic source directories:
 #   A generate-sources script queries k8s for labeled PVCs, resolves their NFS paths
