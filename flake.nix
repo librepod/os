@@ -54,6 +54,7 @@
         gitolite = import ./modules/gitolite;
         gobackup = import ./modules/gobackup;
         k3s = import ./modules/k3s;
+        netboot = import ./modules/netboot;
         networking = import ./modules/networking;
         nfs = import ./modules/nfs;
         nix = import ./modules/nix;
