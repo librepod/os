@@ -14,6 +14,7 @@ set -euo pipefail
 # Configuration
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 STORAGE_CLASS=nfs-client
+SKIP_LABEL=backup.librepod.dev/disabled
 
 # Logging functions for Duplicati integration
 # Messages with these prefixes appear in Duplicati logs
@@ -64,10 +65,12 @@ fi
 # Query PVCs from Kubernetes API to get correct PVC names
 log_info "Scaling down deployments using PVCs..."
 
-# Get all PVCs that are using the configured storage class
+# Get PVCs using the configured storage class, excluding those with the skip label.
+# Only deployments using these PVCs are scaled down — skipped apps stay running.
 pvc_list=$(k3s kubectl get pvc -A -o json 2>/dev/null | jq -r "
   .items[] |
   select(.spec.storageClassName == \"$STORAGE_CLASS\") |
+  select((.metadata.labels[\"$SKIP_LABEL\"] // \"\") != \"true\") |
   \"\(.metadata.namespace) \(.metadata.name)\"
 " || true)
 
@@ -91,8 +94,15 @@ if [ -n "$pvc_list" ]; then
         [ -z "$namespace" ] && continue
         [ -z "$name" ] && continue
 
-        log_info "Scaling down: $namespace/$name (replicas -> 0)"
+        # Save current replica count for post-backup restore.
+        # Helm's three-way merge treats scale-down as an intentional external
+        # change and preserves it on upgrade, so we must restore explicitly.
+        replicas=$(k3s kubectl get deployment "$name" -n "$namespace" \
+          -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "1")
+
+        log_info "Scaling down: $namespace/$name (replicas $replicas -> 0)"
         if timeout 60 k3s kubectl scale deployment "$name" -n "$namespace" --replicas=0 2>/dev/null; then
+          echo "$namespace $name $replicas" >> /run/duplicati/scaled-deployments.txt
           scaled_count=$((scaled_count + 1))
 
           # Wait for pods to terminate (with timeout)

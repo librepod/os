@@ -44,7 +44,6 @@ let
     runtimeInputs = with pkgs; [
       k3s
       fluxcd
-      jq
       coreutils
     ];
     text = builtins.readFile ./scripts/post-backup.sh;
@@ -88,6 +87,8 @@ in
       User = "root";
       # Use the per-PVC backup script which handles PVC discovery and backup
       ExecStart = "${perPvcBackupScript}/bin/duplicati-backup-per-pvc";
+      # Create state file directory for pre-backup replica tracking
+      ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p /run/duplicati";
       # Ensure backup directory exists
       WorkingDirectory = "/var/lib/duplicati";
       # Security hardening - allow read access to all PVCs
