@@ -93,8 +93,15 @@ if [ -n "$pvc_list" ]; then
         [ -z "$namespace" ] && continue
         [ -z "$name" ] && continue
 
-        log_info "Scaling down: $namespace/$name (replicas -> 0)"
+        # Save current replica count for post-backup restore.
+        # Helm's three-way merge treats scale-down as an intentional external
+        # change and preserves it on upgrade, so we must restore explicitly.
+        replicas=$(k3s kubectl get deployment "$name" -n "$namespace" \
+          -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "1")
+
+        log_info "Scaling down: $namespace/$name (replicas $replicas -> 0)"
         if timeout 60 k3s kubectl scale deployment "$name" -n "$namespace" --replicas=0 2>/dev/null; then
+          echo "$namespace $name $replicas" >> /run/borgmatic/scaled-deployments.txt
           scaled_count=$((scaled_count + 1))
 
           # Wait for pods to terminate (with timeout)

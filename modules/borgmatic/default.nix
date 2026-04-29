@@ -9,12 +9,15 @@
 # then scale K8s deployments for consistent snapshots.
 # The hooks use borgmatic's `commands` system (not deprecated before_backup/after_backup).
 #
-# Post-backup resumes HelmReleases BEFORE Kustomizations to avoid a circular
-# dependency: bootstrap Jobs (applied by Kustomizations) poll services deployed
-# by HelmReleases. If HelmReleases are still suspended when the Job starts,
-# the Job fails, the Kustomization fails, and the script exits before ever
-# resuming HelmReleases. See post-backup.sh for the full SSA field-ownership
-# explanation.
+# Post-backup order (all three are required):
+#   1. Resume HelmReleases (remove suspend flag set by pre-backup)
+#   2. Restore scaled-down deployments (Helm's three-way merge won't do it)
+#   3. Resume Kustomizations (Jobs find healthy services)
+#
+# Helm's three-way strategic merge preserves externally-scaled replicas on
+# upgrade, so the pre-backup script saves replica counts to a state file and
+# the post-backup script restores them explicitly. See post-backup.sh for the
+# full SSA field-ownership explanation.
 #
 # Dynamic source directories:
 #   A generate-sources script queries k8s for labeled PVCs, resolves their NFS paths

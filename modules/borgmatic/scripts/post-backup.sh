@@ -3,8 +3,9 @@ set -euo pipefail
 # Post-backup script with FluxCD integration
 #
 # This script restores all workloads after backup completes:
-# 1. Resumes and force-reconciles HelmReleases (restores scaled-down deployments)
-# 2. Resumes FluxCD Kustomizations (re-applies all resources including Jobs)
+# 1. Resumes HelmReleases (removes suspend flag)
+# 2. Restores scaled-down deployments (explicit kubectl scale)
+# 3. Resumes FluxCD Kustomizations (re-applies all resources including Jobs)
 #
 # HelmReleases MUST be resumed before Kustomizations to break a circular
 # dependency caused by Kubernetes server-side apply (SSA) field ownership:
@@ -25,7 +26,7 @@ set -euo pipefail
 #
 #   By resuming HelmReleases first:
 #     1. The helm-controller can reconcile and deploy workloads immediately
-#     2. Force-reconcile restores Deployments scaled to 0 by pre-backup
+#     2. Explicit kubectl scale restores Deployments (Helm won't)
 #     3. When Kustomizations resume, bootstrap Jobs find healthy services
 
 # Configuration
@@ -42,14 +43,11 @@ log_error() {
 
 log_info "Starting post-backup script..."
 
-# Step 1: Resume and force-reconcile HelmReleases
+# Step 1: Resume HelmReleases (just remove the suspend flag, no waiting)
 #
-# Resume removes the suspend flag so the helm-controller can reconcile.
-# Force-reconcile triggers a Helm upgrade that re-applies chart templates,
-# overwriting externally-modified fields (like replicas scaled to 0 during
-# backup). Without --force, Helm's three-way merge preserves the scaled-down
-# replicas because the chart values haven't changed.
-log_info "Resuming and force-reconciling HelmReleases..."
+# We resume HelmReleases without waiting so we can proceed to scale-up
+# quickly. The HelmReleases will reconcile asynchronously.
+log_info "Resuming HelmReleases..."
 hr_list=$(k3s kubectl get helmrelease -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
 
 if [ -n "$hr_list" ]; then
@@ -62,24 +60,45 @@ if [ -n "$hr_list" ]; then
     log_info "Resuming HelmRelease: $hr_namespace/$hr_name"
     flux resume helmrelease "$hr_name" --namespace "$hr_namespace" || {
       log_error "Failed to resume HelmRelease: $hr_namespace/$hr_name"
-      continue
-    }
-
-    log_info "Force-reconciling HelmRelease: $hr_namespace/$hr_name"
-    flux reconcile helmrelease "$hr_name" --namespace "$hr_namespace" --force || {
-      log_error "Failed to force-reconcile HelmRelease: $hr_namespace/$hr_name"
     }
     hr_count=$((hr_count + 1))
   done <<< "$hr_list"
-  log_info "Resumed and force-reconciled $hr_count HelmReleases"
+  log_info "Resumed $hr_count HelmReleases"
 else
   log_info "No HelmReleases found"
 fi
 
-# Step 2: Resume FluxCD Kustomizations
+# Step 2: Restore scaled-down deployments
 #
-# Now that HelmReleases are restored, Kustomization reconciliation can
-# succeed. flux resume marks resources for reconciliation and waits for the
+# Helm's three-way strategic merge treats external scale-down as an
+# intentional change and preserves it on upgrade (even with --force).
+# We must restore replicas explicitly from the state file written by
+# the pre-backup script. Without this, deployments stay at replicas=0
+# indefinitely.
+log_info "Restoring scaled-down deployments..."
+state_file=/run/borgmatic/scaled-deployments.txt
+if [ -f "$state_file" ]; then
+  restore_count=0
+  while read -r namespace name replicas; do
+    [ -z "$namespace" ] || [ -z "$name" ] || [ -z "$replicas" ] && continue
+
+    log_info "Scaling up: $namespace/$name (replicas -> $replicas)"
+    k3s kubectl scale deployment "$name" -n "$namespace" --replicas="$replicas" 2>/dev/null || {
+      log_error "Failed to scale up: $namespace/$name"
+      continue
+    }
+    restore_count=$((restore_count + 1))
+  done < "$state_file"
+  log_info "Restored $restore_count deployments"
+  rm -f "$state_file"
+else
+  log_info "No scaled-deployments state file found — nothing to restore"
+fi
+
+# Step 3: Resume FluxCD Kustomizations
+#
+# Now that deployments are restored and HelmReleases are unsuspended,
+# Kustomization reconciliation can succeed. flux resume waits for the
 # apply to finish. Bootstrap Jobs will find healthy services and complete.
 log_info "Resuming FluxCD Kustomizations..."
 flux resume kustomization --all --namespace flux-system || {
