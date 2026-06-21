@@ -12,7 +12,7 @@ Add LibrePod as a flake input in your `flake.nix`:
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
-    librepod.url = "github:librepod/librepod";
+    librepod.url = "github:librepod/os";
   };
 
   outputs = { self, nixpkgs, librepod, ... }@inputs: {
