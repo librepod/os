@@ -1,0 +1,30 @@
+name: Release (Unstable)
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+
+jobs:
+  unstable:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Update unstable tag
+        run: |
+          git tag -f unstable
+          git push -f origin unstable
+
+      - name: Create/update unstable prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: unstable
+          name: "unstable (master)"
+          body: "Rolling prerelease tracking `master`. Updated automatically on every push."
+          prerelease: true
+          generate_release_notes: true

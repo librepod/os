@@ -1,0 +1,28 @@
+name: PR Dev Tags
+
+on:
+  pull_request:
+    types: [opened, synchronize, closed]
+
+permissions:
+  contents: write
+
+jobs:
+  pr-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Create/update pr-${{ github.event.number }} tag
+        if: github.event.action != 'closed'
+        run: |
+          git tag -f pr-${{ github.event.number }}
+          git push -f origin pr-${{ github.event.number }}
+
+      - name: Delete pr-${{ github.event.number }} tag
+        if: github.event.action == 'closed'
+        run: |
+          git push origin :pr-${{ github.event.number }} || true
