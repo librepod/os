@@ -14,7 +14,7 @@ set -euo pipefail
 # Configuration
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 STORAGE_CLASS=nfs-client
-SKIP_LABEL=backup.librepod.dev/disabled
+SKIP_LABEL=backup.libre.pod/disabled
 
 # Logging functions for Duplicati integration
 # Messages with these prefixes appear in Duplicati logs

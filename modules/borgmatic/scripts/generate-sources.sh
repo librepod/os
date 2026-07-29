@@ -3,7 +3,7 @@ set -euo pipefail
 # Dynamic source directory generator for borgmatic
 #
 # Queries Kubernetes for all PVCs (excluding those labeled
-# backup.librepod.dev/disabled=true) and resolves their NFS filesystem paths
+# backup.libre.pod/disabled=true) and resolves their NFS filesystem paths
 # via the bound PV's spec.nfs.path.
 # Generates /run/borgmatic/sources.yaml with a source_directories list
 # that borgmatic includes via <<: !include in its base config.
@@ -15,7 +15,7 @@ set -euo pipefail
 # Configuration
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 STORAGE_CLASS=nfs-client
-SKIP_LABEL=backup.librepod.dev/disabled
+SKIP_LABEL=backup.libre.pod/disabled
 OUTPUT_FILE=/run/borgmatic/sources.yaml
 
 # Logging functions

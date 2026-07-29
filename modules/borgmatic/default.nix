@@ -1,7 +1,7 @@
 # Borgmatic backup module with FluxCD integration
 #
 # This module configures borgmatic for automated nightly backups of k3s PVC data.
-# All PVCs are backed up by default; label `backup.librepod.dev/disabled=true` to skip.
+# All PVCs are backed up by default; label `backup.libre.pod/disabled=true` to skip.
 # Borg's content-addressed storage enables per-PVC restore via path-based extraction
 # without requiring separate backup jobs per PVC.
 #
@@ -27,7 +27,7 @@
 #   we use runCommand to prepend it to the generated config.
 #
 # To skip a PVC from backup:
-#   kubectl label pvc <pvc-name> -n <namespace> backup.librepod.dev/disabled=true
+#   kubectl label pvc <pvc-name> -n <namespace> backup.libre.pod/disabled=true
 #
 # To restore a specific PVC:
 #   borgmatic extract --archive latest --restore-path exports/k3s/<namespace>/<pvc-name>/
