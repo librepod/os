@@ -2,8 +2,8 @@
 {
   name = "flux";
   repo = "oci://ghcr.io/controlplaneio-fluxcd/charts/flux-instance";
-  version = "0.48.0";
-  hash = "sha256-YASZtDWzmdmc1PwbNEj/1rE+csx/If9RDZosD+gj90o=";
+  version = "0.57.0";
+  hash = "sha256-qk8fjUM6f3YYfA5t1vsHOOtpaoV731LoFzISCJgsQ3k=";
   targetNamespace = "flux-system";
   createNamespace = true;
   extraDeploy = [

@@ -2,8 +2,8 @@
 {
   name = "flux-operator";
   repo = "oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator";
-  version = "0.48.0";
-  hash = "sha256-L8vpRAVeqD9IAKjMr0rt7F5bHRj55qhkL6j8fvshS5o=";
+  version = "0.57.0";
+  hash = "sha256-NBmhU5grQV1c2lLAJAGDdjrb0GKcTLM/KhKytpKGG3Q=";
   targetNamespace = "flux-system";
   createNamespace = true;
   values = {
