@@ -84,6 +84,25 @@ nix run github:nix-community/nixos-anywhere -- --flake .#my-machine root@<ip>
 curl https://raw.githubusercontent.com/librepod/librepod-install/master/librepod-install | bash -x
 ```
 
+## Branching & Releases
+
+LibrePod OS uses trunk-based development — there is no `develop` branch.
+
+- **`master` is the trunk and is *unstable*** — always CI-green, but not release-grade. Changes land via short-lived feature branches merged through PRs (required checks: `check`, `fmt`).
+- **The `unstable` tag** is force-moved to `master` HEAD on every push and publishes a rolling pre-release. Track the trunk in consumer flakes:
+
+  ```nix
+  librepod.url = "github:librepod/os";  # rolling unstable; flake.lock pins the exact rev
+  ```
+
+- **`vX.Y.Z` tags are stable releases**, cut from a `master` commit that has soaked on `unstable`. Cut one via **Actions → Release (Stable) → Run workflow** (enter e.g. `0.2.0`), or manually:
+
+  ```bash
+  git tag v0.2.0 && git push origin v0.2.0
+  ```
+
+  The workflow validates semver ordering, tags `master` HEAD, and publishes a GitHub Release marked **Latest**. Pin a stable input with `github:librepod/os/vX.Y.Z`.
+
 ## License
 
 GNU General Public License v3.0 — see [LICENSE](LICENSE).
