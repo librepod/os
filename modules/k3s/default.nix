@@ -4,6 +4,39 @@
   lib,
   ...
 }:
+let
+  # k3s's helm-controller (klipper) only (re)runs a chart's install/upgrade Job when the
+  # HelmChart's configHash differs from the hash recorded on the deployed release. The
+  # configHash covers the entire Job pod template, and nixpkgs injects `spec.version` into
+  # the pod's VERSION env — so the version is part of that hash.
+  #
+  # Problem: nixpkgs' services.k3s.autoDeployCharts generates a *version-less* `spec.chart`
+  # (e.g. .../static/charts/flux-operator.tgz) and never sets spec.version; the version is
+  # used only to fetch the tarball at build time. Bumping a chart's version therefore changes
+  # neither spec.chart nor the pod template, so the configHash is unchanged and klipper never
+  # upgrades the in-cluster release — it stays frozen at whatever was first installed.
+  #
+  # Fix: mirror each chart's `version` into the HelmChart CR's spec.version via the
+  # `extraFieldDefinitions` escape hatch nixpkgs provides. This makes the version part of the
+  # configHash, so version bumps are deployed automatically on the next k3s reconcile.
+  # `helm` ignores --version for packaged charts, so this does not change what is installed.
+  # Refs:
+  #   https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/services/cluster/rancher/default.nix
+  #   https://github.com/rancher/helm-controller (pkg/controllers/chart/chart.go: hashObjects)
+  mkAutoDeployChart =
+    chart:
+    let
+      # chart files are NixOS submodule modules (functions); evaluate them to a plain config
+      # attrset so we can inject a field before they reach the autoDeployCharts option.
+      c = if lib.isFunction chart then chart { inherit lib pkgs; } else chart;
+    in
+    if c ? version then
+      lib.recursiveUpdate c {
+        extraFieldDefinitions.spec.version = c.version;
+      }
+    else
+      c;
+in
 {
 
   # INFO: See this on how to reset cluster and start fresh:
@@ -36,8 +69,8 @@
     # Auto-deploy charts for K3S
     # https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/services/cluster/k3s/default.nix
     autoDeployCharts = {
-      flux-operator = import ./charts/flux-operator.nix;
-      flux-instance = import ./charts/flux-instance.nix;
+      flux-operator = mkAutoDeployChart (import ./charts/flux-operator.nix);
+      flux-instance = mkAutoDeployChart (import ./charts/flux-instance.nix);
     };
   };
 
