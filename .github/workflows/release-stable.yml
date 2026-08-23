@@ -1,0 +1,71 @@
+name: Release (Stable)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to cut, with or without leading v (e.g. 0.2.0)"
+        required: true
+        type: string
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  cut:
+    name: Cut release (dispatch)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Validate version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${INPUT_VERSION#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Version must be semver X.Y.Z (got '$INPUT_VERSION')"; exit 1
+          fi
+          latest="$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)"
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "::error::Tag v$version already exists"; exit 1
+          fi
+          if ! [ "$(printf '%s\n' "$latest" "v$version" | sort -V | tail -n1)" = "v$version" ] \
+             || [ "$latest" = "v$version" ]; then
+            echo "::error::v$version must be greater than latest tag ${latest:-<none>}"; exit 1
+          fi
+          echo "TAG=v$version" >> "$GITHUB_ENV"
+
+      - name: Tag master HEAD
+        run: |
+          git tag "$TAG"
+          git push origin "$TAG"
+
+      - name: Publish GitHub Release (Latest)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.TAG }}
+          generate_release_notes: true
+          make_latest: true
+
+  publish:
+    name: Publish release (tag push)
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Publish GitHub Release (Latest)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          make_latest: true
