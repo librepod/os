@@ -101,7 +101,9 @@ LibrePod OS uses trunk-based development — there is no `develop` branch.
   git tag v0.2.0 && git push origin v0.2.0
   ```
 
-  The workflow validates semver ordering, tags `master` HEAD, and publishes a GitHub Release marked **Latest**. Pin a stable input with `github:librepod/os/vX.Y.Z`.
+  The dispatch path validates semver ordering and tags `master` HEAD; both paths publish a GitHub Release marked **Latest**. Pin a stable input with `github:librepod/os/vX.Y.Z`.
+
+If a dispatch run fails after the tag has already landed (for example the release-publishing step errored), do **not** delete the tag — re-running or re-dispatching will refuse ("Tag vX.Y.Z already exists"). Finish the release by hand: `gh release create vX.Y.Z --generate-notes --latest`.
 
 ## License
 
