@@ -69,3 +69,4 @@ jobs:
           name: ${{ github.ref_name }}
           generate_release_notes: true
           make_latest: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
