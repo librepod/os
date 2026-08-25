@@ -23,7 +23,7 @@
         kind = "OCIRepository";
         name = "librepod-bootstrap";
         path = "./clusters/librepod";
-        ref = "latest"; # TODO: set to a fixed stable version of librepod-bootstrap artifact
+        ref = "v0.1.0";
         url = "oci://ghcr.io/librepod/marketplace/bootstrap";
       };
       kustomize = {

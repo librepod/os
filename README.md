@@ -103,6 +103,8 @@ LibrePod OS uses trunk-based development — there is no `develop` branch.
 
   The dispatch path validates semver ordering and tags `master` HEAD; both paths publish a GitHub Release marked **Latest**. Pin a stable input with `github:librepod/os/vX.Y.Z`.
 
+  The cluster bootstrap artifact follows the same discipline: `modules/k3s/charts/flux-instance.nix` pins `ref = "vX.Y.Z"` — bumped deliberately like any other input, never tracking `latest`.
+
 If a dispatch run fails after the tag has already landed (for example the release-publishing step errored), do **not** delete the tag — re-running or re-dispatching will refuse ("Tag vX.Y.Z already exists"). Finish the release by hand: `gh release create vX.Y.Z --generate-notes --latest`.
 
 ## License
