@@ -21,9 +21,9 @@
       sync = {
         interval = "12h";
         kind = "OCIRepository";
-        name = "librepod-bootstrap";
+        name = "marketplace-bootstrap";
         path = "./clusters/librepod";
-        ref = "v0.1.0";
+        ref = "0.1.1";
         url = "oci://ghcr.io/librepod/marketplace/bootstrap";
       };
       kustomize = {
@@ -38,7 +38,7 @@
                     name: cosign-pub
             '';
             target.kind = "OCIRepository";
-            target.name = "librepod-bootstrap";
+            target.name = "marketplace-bootstrap";
           }
         ];
       };
