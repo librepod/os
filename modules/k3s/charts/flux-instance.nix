@@ -23,7 +23,7 @@
         kind = "OCIRepository";
         name = "marketplace-bootstrap";
         path = "./clusters/librepod";
-        ref = "0.1.1";
+        ref = "0.1.2";
         url = "oci://ghcr.io/librepod/marketplace/bootstrap";
       };
       kustomize = {
