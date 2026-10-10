@@ -67,8 +67,35 @@ Then configure your machine:
 
 Hardware profiles for supported devices:
 
-- **`devices/lenovo-m710q/`** — Lenovo ThinkCentre M710Q Tiny
-- **`devices/virtualbox-vm/`** — VirtualBox VM (for testing)
+- **`hw/lenovo-m710q/`** — Lenovo ThinkCentre M710Q Tiny (generic Intel mini-PC)
+- **`hw/beelink-sei8/`** — Beelink SEi8 (LUKS root, USB key unlock)
+- **`devices/`** — older per-machine configurations (pre-appliance)
+
+## Appliances (device layer)
+
+`librepod.lib.mkDevice` assembles a complete appliance from a hardware profile
+plus per-device identity — used by the small flake an installed device owns at
+`/etc/nixos`:
+
+```nix
+{
+  inputs.librepod.url = "github:librepod/os/v0.3.5";
+  outputs = { librepod, ... }: {
+    nixosConfigurations.pod-abc123 = librepod.lib.mkDevice {
+      name = "pod-abc123";
+      device = "lenovo-m710q";          # ./hw/<name>
+      modules = [ ./identity.nix ];     # users, keys, frpc — never hardware
+    };
+  };
+}
+```
+
+Provision a device over netboot with `librepod-install --device beelink-sei8
+--name pod-1 --identity id.nix`. Updates are consent-driven: the Marketplace
+writes intent to ConfigMap `librepod-os/<hostname>`; the host updater applies
+release tags only (`vX.Y.Z`), reboots, and a boot sentinel rolls the device
+back automatically if the update is unhealthy. Unattended updates need an
+explicit per-device policy (`policy.unattended` + a nightly window).
 
 ## Installation
 
