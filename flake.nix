@@ -59,6 +59,7 @@
         nfs = import ./modules/nfs;
         nix = import ./modules/nix;
         ssh = import ./modules/ssh;
+        updates = import ./modules/updates;
         users = import ./modules/users;
         # Also available standalone — NixOS deduplicates if imported with `common`.
         usb-automount = ./modules/common/usb-automount.nix;
@@ -83,7 +84,54 @@
             };
             modules = modules ++ [ path ];
           };
+
+        # Assembles a complete LibrePod appliance from a hardware profile +
+        # per-device identity modules. Used by the generated device flake
+        # (see docs/superpowers/specs/2026-10-10-device-layer-os-updates-design.md).
+        #   name    — hostname; becomes the nixosConfigurations attr name
+        #   device  — supported profile name under ./hw (string), or any
+        #             hardware module path (unsupported/personal devices)
+        #   modules — identity modules (users, frpc, per-device bits)
+        mkDevice =
+          {
+            name,
+            device,
+            modules ? [ ],
+          }:
+          nixpkgs.lib.nixosSystem {
+            system = "x86_64-linux";
+            specialArgs = {
+              librepod = self;
+              inputs = {
+                inherit nixpkgs disko;
+              };
+            };
+            modules = [
+              # Pinned k3s from this os release
+              { nixpkgs.overlays = [ self.overlays.default ]; }
+              disko.nixosModules.disko
+              # Appliance base stack — identity extends, not replaces
+              self.nixosModules.common
+              self.nixosModules.networking
+              self.nixosModules.nix
+              self.nixosModules.ssh
+              self.nixosModules.users
+              self.nixosModules.usb-automount
+              self.nixosModules.k3s
+              self.nixosModules.updates
+              # Supported profile by name, or a consumer-supplied module path
+              (if builtins.isString device then (./hw + "/${device}") else device)
+              { networking.hostName = name; }
+              # Appliances are updateable; identity can override (mkDefault).
+              { librepod.updates.enable = nixpkgs.lib.mkDefault true; }
+            ]
+            ++ modules;
+          };
       };
+
+      packages.x86_64-linux.librepod-install =
+        nixpkgs.legacyPackages.x86_64-linux.callPackage ./pkgs/librepod-install
+          { };
 
       # Verify all modules can be evaluated without error.
       checks.x86_64-linux =
@@ -96,6 +144,66 @@
             echo "Module paths all resolve — check passed."
             touch $out
           '';
+
+          # Evaluate each hardware profile standalone as a full NixOS config
+          # (real eval gate) — one eval per profile: two disk layouts can't
+          # live in the same config.
+          hw-profiles =
+            let
+              evalHW =
+                hw:
+                nixpkgs.lib.nixosSystem {
+                  system = "x86_64-linux";
+                  modules = [
+                    disko.nixosModules.disko
+                    hw
+                    { system.stateVersion = "25.11"; }
+                  ];
+                };
+            in
+            pkgs.runCommand "hw-profiles-eval"
+              {
+                # Forces full evaluation of the system, then discards the
+                # result: a .drv path in an env var becomes an input drv,
+                # which would make this check BUILD the system.
+                forcedEval = builtins.deepSeq [
+                  (evalHW ./hw/lenovo-m710q).config.system.build.toplevel.drvPath
+                ] "";
+              }
+              ''
+                echo "hw profiles evaluate — check passed."
+                touch $out
+              '';
+
+          # mkDevice produces an evaluable appliance configuration per hw profile.
+          mk-device =
+            let
+              mk =
+                device:
+                self.lib.mkDevice {
+                  inherit device;
+                  name = "pod-test";
+                  modules = [ ./checks/stub-identity.nix ];
+                };
+            in
+            pkgs.runCommand "mk-device-eval"
+              {
+                # Forces full evaluation of the appliance; result discarded
+                # so no .drv path leaks into env (would make this BUILD it).
+                # Both device forms: profile name and module path.
+                forcedEval = builtins.deepSeq [
+                  (mk "lenovo-m710q").config.system.build.toplevel.drvPath
+                  (mk ./hw/lenovo-m710q).config.system.build.toplevel.drvPath
+                ] "";
+              }
+              ''
+                echo "mkDevice evaluates for both device forms — check passed."
+                touch $out
+              '';
+
+          updater-test = pkgs.callPackage ./checks/updater-test.nix { };
+          sentinel-test = pkgs.callPackage ./checks/sentinel-test.nix { };
+          installer-test = pkgs.callPackage ./checks/installer-test.nix { };
 
           # Formatting check: ensures all .nix files are formatted.
           formatting = treefmtEval.config.build.check self;
