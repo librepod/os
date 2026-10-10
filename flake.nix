@@ -83,6 +83,44 @@
             };
             modules = modules ++ [ path ];
           };
+
+        # Assembles a complete LibrePod appliance from a hardware profile +
+        # per-device identity modules. Used by the generated device flake
+        # (see docs/superpowers/specs/2026-10-10-device-layer-os-updates-design.md).
+        #   name    — hostname; becomes the nixosConfigurations attr name
+        #   device  — hardware profile dir name under ./hw
+        #   modules — identity modules (users, frpc, per-device bits)
+        mkDevice =
+          {
+            name,
+            device,
+            modules ? [ ],
+          }:
+          nixpkgs.lib.nixosSystem {
+            system = "x86_64-linux";
+            specialArgs = {
+              librepod = self;
+              inputs = {
+                inherit nixpkgs disko;
+              };
+            };
+            modules = [
+              # Pinned k3s from this os release
+              { nixpkgs.overlays = [ self.overlays.default ]; }
+              disko.nixosModules.disko
+              # Appliance base stack — identity extends, not replaces
+              self.nixosModules.common
+              self.nixosModules.networking
+              self.nixosModules.nix
+              self.nixosModules.ssh
+              self.nixosModules.users
+              self.nixosModules.usb-automount
+              self.nixosModules.k3s
+              (./hw + "/${device}")
+              { networking.hostName = name; }
+            ]
+            ++ modules;
+          };
       };
 
       # Verify all modules can be evaluated without error.
@@ -125,6 +163,31 @@
               }
               ''
                 echo "hw profiles evaluate — check passed."
+                touch $out
+              '';
+
+          # mkDevice produces an evaluable appliance configuration per hw profile.
+          mk-device =
+            let
+              mk =
+                device:
+                self.lib.mkDevice {
+                  inherit device;
+                  name = "pod-test";
+                  modules = [ ./checks/stub-identity.nix ];
+                };
+            in
+            pkgs.runCommand "mk-device-eval"
+              {
+                # Forces full evaluation of both appliances; results discarded
+                # so no .drv path leaks into env (would make this BUILD them).
+                forcedEval = builtins.deepSeq (map (device: (mk device).config.system.build.toplevel.drvPath) [
+                  "lenovo-m710q"
+                  "beelink-sei8"
+                ]) "";
+              }
+              ''
+                echo "mkDevice evaluates for both hw profiles — check passed."
                 touch $out
               '';
 
