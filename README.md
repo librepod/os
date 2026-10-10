@@ -89,6 +89,14 @@ plus per-device identity — used by the small flake an installed device owns at
 }
 ```
 
+Unsupported devices work too — `device` also accepts any hardware module
+path (kernel/boot config, file systems, disko layout), so a personal device
+can be a full appliance without a profile in `hw/`:
+
+```nix
+      device = ./my-hardware.nix;       # instead of a ./hw/<name> string
+```
+
 Provision a device over netboot with `librepod-install --device lenovo-m710q
 --name pod-1 --identity id.nix`. Updates are consent-driven: the Marketplace
 writes intent to ConfigMap `librepod-os/<hostname>`; the host updater applies

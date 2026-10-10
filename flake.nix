@@ -89,7 +89,8 @@
         # per-device identity modules. Used by the generated device flake
         # (see docs/superpowers/specs/2026-10-10-device-layer-os-updates-design.md).
         #   name    — hostname; becomes the nixosConfigurations attr name
-        #   device  — hardware profile dir name under ./hw
+        #   device  — supported profile name under ./hw (string), or any
+        #             hardware module path (unsupported/personal devices)
         #   modules — identity modules (users, frpc, per-device bits)
         mkDevice =
           {
@@ -118,7 +119,8 @@
               self.nixosModules.usb-automount
               self.nixosModules.k3s
               self.nixosModules.updates
-              (./hw + "/${device}")
+              # Supported profile by name, or a consumer-supplied module path
+              (if builtins.isString device then (./hw + "/${device}") else device)
               { networking.hostName = name; }
               # Appliances are updateable; identity can override (mkDefault).
               { librepod.updates.enable = nixpkgs.lib.mkDefault true; }
@@ -188,12 +190,14 @@
               {
                 # Forces full evaluation of the appliance; result discarded
                 # so no .drv path leaks into env (would make this BUILD it).
+                # Both device forms: profile name and module path.
                 forcedEval = builtins.deepSeq [
                   (mk "lenovo-m710q").config.system.build.toplevel.drvPath
+                  (mk ./hw/lenovo-m710q).config.system.build.toplevel.drvPath
                 ] "";
               }
               ''
-                echo "mkDevice evaluates for both hw profiles — check passed."
+                echo "mkDevice evaluates for both device forms — check passed."
                 touch $out
               '';
 
