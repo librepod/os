@@ -127,6 +127,10 @@
           };
       };
 
+      packages.x86_64-linux.librepod-install =
+        nixpkgs.legacyPackages.x86_64-linux.callPackage ./pkgs/librepod-install
+          { };
+
       # Verify all modules can be evaluated without error.
       checks.x86_64-linux =
         let
@@ -197,6 +201,7 @@
 
           updater-test = pkgs.callPackage ./checks/updater-test.nix { };
           sentinel-test = pkgs.callPackage ./checks/sentinel-test.nix { };
+          installer-test = pkgs.callPackage ./checks/installer-test.nix { };
 
           # Formatting check: ensures all .nix files are formatted.
           formatting = treefmtEval.config.build.check self;
