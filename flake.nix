@@ -192,6 +192,7 @@
               '';
 
           updater-test = pkgs.callPackage ./checks/updater-test.nix { };
+          sentinel-test = pkgs.callPackage ./checks/sentinel-test.nix { };
 
           # Formatting check: ensures all .nix files are formatted.
           formatting = treefmtEval.config.build.check self;
