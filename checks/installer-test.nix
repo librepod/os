@@ -44,7 +44,7 @@ pkgs.runCommand "installer-test"
            NIX_BIN="$ROOT/bin/nix"
 
     bash "${../pkgs/librepod-install/install.sh}" \
-      --device beelink-sei8 --name pod-test --os-tag v0.3.5 \
+      --device lenovo-m710q --name pod-test --os-tag v0.3.5 \
       --identity "$ROOT/identity/identity.nix"
 
     grep -q "disko --flake .*#pod-test --mode destroy,format,mount" "$CALLS_LOG" \
@@ -55,7 +55,7 @@ pkgs.runCommand "installer-test"
       || { echo "FAIL: pin line missing/wrong"; exit 1; }
     grep -q 'name = "pod-test"' "$ROOT/mnt/etc/nixos/flake.nix" \
       || { echo "FAIL: device name missing"; exit 1; }
-    grep -q 'device = "beelink-sei8"' "$ROOT/mnt/etc/nixos/flake.nix" \
+    grep -q 'device = "lenovo-m710q"' "$ROOT/mnt/etc/nixos/flake.nix" \
       || { echo "FAIL: hw profile missing"; exit 1; }
     grep -q './identity.nix' "$ROOT/mnt/etc/nixos/flake.nix" \
       || { echo "FAIL: identity not referenced"; exit 1; }

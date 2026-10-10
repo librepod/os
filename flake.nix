@@ -161,13 +161,12 @@
             in
             pkgs.runCommand "hw-profiles-eval"
               {
-                # Forces full evaluation of both systems, then discards the
-                # results: a .drv path in an env var becomes an input drv,
-                # which would make this check BUILD the systems.
-                forcedEval = builtins.deepSeq (map (hw: (evalHW hw).config.system.build.toplevel.drvPath) [
-                  ./hw/lenovo-m710q
-                  ./hw/beelink-sei8
-                ]) "";
+                # Forces full evaluation of the system, then discards the
+                # result: a .drv path in an env var becomes an input drv,
+                # which would make this check BUILD the system.
+                forcedEval = builtins.deepSeq [
+                  (evalHW ./hw/lenovo-m710q).config.system.build.toplevel.drvPath
+                ] "";
               }
               ''
                 echo "hw profiles evaluate — check passed."
@@ -187,12 +186,11 @@
             in
             pkgs.runCommand "mk-device-eval"
               {
-                # Forces full evaluation of both appliances; results discarded
-                # so no .drv path leaks into env (would make this BUILD them).
-                forcedEval = builtins.deepSeq (map (device: (mk device).config.system.build.toplevel.drvPath) [
-                  "lenovo-m710q"
-                  "beelink-sei8"
-                ]) "";
+                # Forces full evaluation of the appliance; result discarded
+                # so no .drv path leaks into env (would make this BUILD it).
+                forcedEval = builtins.deepSeq [
+                  (mk "lenovo-m710q").config.system.build.toplevel.drvPath
+                ] "";
               }
               ''
                 echo "mkDevice evaluates for both hw profiles — check passed."

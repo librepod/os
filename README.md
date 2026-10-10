@@ -68,7 +68,6 @@ Then configure your machine:
 Hardware profiles for supported devices:
 
 - **`hw/lenovo-m710q/`** — Lenovo ThinkCentre M710Q Tiny (generic Intel mini-PC)
-- **`hw/beelink-sei8/`** — Beelink SEi8 (LUKS root, USB key unlock)
 - **`devices/`** — older per-machine configurations (pre-appliance)
 
 ## Appliances (device layer)
@@ -90,7 +89,7 @@ plus per-device identity — used by the small flake an installed device owns at
 }
 ```
 
-Provision a device over netboot with `librepod-install --device beelink-sei8
+Provision a device over netboot with `librepod-install --device lenovo-m710q
 --name pod-1 --identity id.nix`. Updates are consent-driven: the Marketplace
 writes intent to ConfigMap `librepod-os/<hostname>`; the host updater applies
 release tags only (`vX.Y.Z`), reboots, and a boot sentinel rolls the device
