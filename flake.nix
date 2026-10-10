@@ -59,6 +59,7 @@
         nfs = import ./modules/nfs;
         nix = import ./modules/nix;
         ssh = import ./modules/ssh;
+        updates = import ./modules/updates;
         users = import ./modules/users;
         # Also available standalone — NixOS deduplicates if imported with `common`.
         usb-automount = ./modules/common/usb-automount.nix;
@@ -116,8 +117,11 @@
               self.nixosModules.users
               self.nixosModules.usb-automount
               self.nixosModules.k3s
+              self.nixosModules.updates
               (./hw + "/${device}")
               { networking.hostName = name; }
+              # Appliances are updateable; identity can override (mkDefault).
+              { librepod.updates.enable = nixpkgs.lib.mkDefault true; }
             ]
             ++ modules;
           };
