@@ -97,6 +97,37 @@
             touch $out
           '';
 
+          # Evaluate each hardware profile standalone as a full NixOS config
+          # (real eval gate) — one eval per profile: two disk layouts can't
+          # live in the same config.
+          hw-profiles =
+            let
+              evalHW =
+                hw:
+                nixpkgs.lib.nixosSystem {
+                  system = "x86_64-linux";
+                  modules = [
+                    disko.nixosModules.disko
+                    hw
+                    { system.stateVersion = "25.11"; }
+                  ];
+                };
+            in
+            pkgs.runCommand "hw-profiles-eval"
+              {
+                # Forces full evaluation of both systems, then discards the
+                # results: a .drv path in an env var becomes an input drv,
+                # which would make this check BUILD the systems.
+                forcedEval = builtins.deepSeq (map (hw: (evalHW hw).config.system.build.toplevel.drvPath) [
+                  ./hw/lenovo-m710q
+                  ./hw/beelink-sei8
+                ]) "";
+              }
+              ''
+                echo "hw profiles evaluate — check passed."
+                touch $out
+              '';
+
           # Formatting check: ensures all .nix files are formatted.
           formatting = treefmtEval.config.build.check self;
         };
