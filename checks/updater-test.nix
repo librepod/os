@@ -159,6 +159,19 @@ pkgs.runCommand "updater-test"
     grep -q 'github:librepod/os/v9.9.9' "$FLAKE/flake.nix" \
       || { echo "FAIL: update not applied inside a midnight-wrapping window"; exit 1; }
 
+    # ---- scenario 5: custom URI prefix (E2E uses git+file) ------------------
+    : > "$LOG"
+    export SPEC_FILE="$STUBS/spec-prefix.json"
+    echo '{"desiredVersion":"v9.9.9","apply":"now"}' > "$SPEC_FILE"
+    export LIBREPOD_URI_PREFIX="git+file:///srv/os?ref="
+    printf 'inputs.librepod.url = "git+file:///srv/os?ref=v0.3.5";\n' > "$FLAKE/flake.nix"
+
+    bash "$UPDATER"
+
+    grep -q 'git+file:///srv/os?ref=v9.9.9' "$FLAKE/flake.nix" \
+      || { echo "FAIL: custom URI prefix not repinned"; exit 1; }
+    unset LIBREPOD_URI_PREFIX
+
     echo "updater scenarios passed"
     touch $out
   ''

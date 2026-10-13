@@ -4,6 +4,10 @@
 
 NIX_BIN="${NIX_BIN:-nix}"
 
+# Pin location. Default is the real release repo; the E2E suite points this
+# at a local git+file repo. BRE-safe prefixes only (+ ? / : are literal).
+URI_PREFIX="${LIBREPOD_URI_PREFIX:-github:librepod/os/}"
+
 die() { report failed "$1"; exit 1; }
 
 # Stamp/heal librepod.os/version from the lock: first boot (discovery gate
@@ -79,10 +83,10 @@ fi
 # ---- 3. repin ----------------------------------------------------------------
 report building "repinning to $DESIRED"
 backup_pin   # sentinel restores this on rollback or stale-flag clear
-if ! grep -q 'inputs\.librepod\.url = "github:librepod/os/v[0-9.]*"' "$FLAKE_DIR/flake.nix"; then
+if ! grep -q "inputs\\.librepod\\.url = \"${URI_PREFIX}v[0-9.]*\"" "$FLAKE_DIR/flake.nix"; then
   die "pin line not found in $FLAKE_DIR/flake.nix — refusing to edit unknown file"
 fi
-sed -i "s|github:librepod/os/v[0-9.]*|github:librepod/os/$DESIRED|" "$FLAKE_DIR/flake.nix"
+sed -i "s|${URI_PREFIX}v[0-9.]*|${URI_PREFIX}${DESIRED}|" "$FLAKE_DIR/flake.nix"
 "$NIX_BIN" flake update librepod --flake "$FLAKE_DIR" >/dev/null \
   || die "nix flake update failed for $DESIRED"
 
