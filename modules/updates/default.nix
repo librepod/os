@@ -8,6 +8,10 @@
 let
   cfg = config.librepod.updates;
 
+  # Shared env/status scaffolding, prepended to both scripts so they can't
+  # drift (env defaults, kctl, current_version, report, pin backup/restore).
+  common = builtins.readFile ./common.sh;
+
   mkScript =
     name: text:
     pkgs.writeShellApplication {
@@ -18,7 +22,7 @@ let
         k3s
         systemd
       ];
-      inherit text;
+      text = common + text;
     };
 
   updater = mkScript "librepod-updater" (builtins.readFile ./updater.sh);

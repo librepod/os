@@ -1,16 +1,8 @@
-#!/usr/bin/env bash
 # LibrePod update sentinel — runs at boot when an update was staged.
 # Healthy → commit (label + done). Unhealthy → rollback previous generation.
 # Stale flag → clear. No previous generation → failed (frp SSH is the rescue).
-set -euo pipefail
+# (common.sh is prepended by modules/updates/default.nix.)
 
-STATE_DIR="${LIBREPOD_STATE_DIR:-/var/lib/librepod}"
-NODE_NAME="${LIBREPOD_NODE_NAME:-$(hostname)}"
-NS="${LIBREPOD_CM_NAMESPACE:-librepod-os}"
-KUBECTL="${KUBECTL:-k3s kubectl}"
-NIX_ENV_BIN="${NIX_ENV_BIN:-nix-env}"
-SYSTEMCTL="${SYSTEMCTL:-systemctl}"
-PROFILE="${LIBREPOD_PROFILE:-/nix/var/nix/profiles/system}"
 TIMEOUT="${LIBREPOD_HEALTH_TIMEOUT:-900}"
 STABLE="${LIBREPOD_HEALTH_STABLE:-120}"
 INTERVAL="${LIBREPOD_POLL_INTERVAL:-15}"
@@ -21,22 +13,6 @@ PENDING="$STATE_DIR/update-pending"
 FROM="$(jq -r '.from' "$PENDING")"
 TO="$(jq -r '.to' "$PENDING")"
 
-# shellcheck disable=SC2086  # KUBECTL may be multiple words ("k3s kubectl")
-kctl() { $KUBECTL "$@"; }
-
-report() { # state, detail
-  local cv
-  cv="$(kctl get node "$NODE_NAME" -o 'jsonpath={.metadata.labels.librepod\.os/version}' 2>/dev/null || true)"
-  local now; now="$(date -u +%FT%TZ)"
-  local json
-  json=$(jq -n \
-    --arg cv "${cv:-unknown}" --arg st "$1" --arg ts "$now" --arg d "$2" \
-    '{currentVersion:$cv, state:$st, lastTransition:$ts, detail:$d}')
-  kctl -n "$NS" patch configmap "$NODE_NAME" --type merge \
-    -p "$(jq -n --arg s "$json" '{data:{"status.json":$s}}')" >/dev/null 2>&1 || true
-  echo "[librepod-sentinel][$1] $2"
-}
-
 healthy() {
   "$SYSTEMCTL" is-active --quiet k3s \
     && [ "$("$SYSTEMCTL" is-active sshd || true)" = "active" ] \
@@ -44,10 +20,13 @@ healthy() {
 }
 
 # Stale flag: profile unchanged since staging (power loss mid-flow) — the
-# reboot never landed, nothing to verify or roll back.
-CURRENT="$(readlink "$PROFILE" || true)"
+# reboot never landed, nothing to verify or roll back. Restore the pin: the
+# lock may claim a version that never booted.
+# -f: profile symlinks are relative generation links (system-N-link)
+CURRENT="$(readlink -f "$PROFILE" || true)"
 if [ -n "$CURRENT" ] && [ "$CURRENT" = "$FROM" ]; then
   rm -f "$PENDING"
+  restore_pin
   report idle "stale sentinel flag cleared (update never landed)"
   exit 0
 fi
@@ -69,6 +48,10 @@ while :; do
     if [ "$(date +%s)" -ge "$deadline" ]; then
       # ---- rollback ---------------------------------------------------------
       if [ "$FROM" != "none" ] && [ -e "$FROM/bin/switch-to-configuration" ]; then
+        # Revert the pin before reporting: report reads the restored lock, and
+        # the next updater poll sees DESIRED != CURRENT instead of masking
+        # this rollback as "up to date".
+        restore_pin
         report rolled_back "health check failed — rolling back to $FROM"
         "$NIX_ENV_BIN" -p "$PROFILE" --set "$FROM"
         "$FROM/bin/switch-to-configuration" boot
@@ -86,6 +69,8 @@ while :; do
 done
 
 # ---- commit -----------------------------------------------------------------
-rm -f "$PENDING"
+rm -f "$PENDING" "$STATE_DIR"/flake.nix.bak "$STATE_DIR"/flake.lock.bak
+# Label from $TO directly (the lock may be unreadable here); if this call is
+# dropped, the updater's next-poll reconcile_label heals it.
 kctl label node "$NODE_NAME" "librepod.os/version=$TO" --overwrite >/dev/null 2>&1 || true
-report done "update to $TO verified healthy"
+report "done" "update to $TO verified healthy"

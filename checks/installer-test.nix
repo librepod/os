@@ -14,6 +14,7 @@ pkgs.runCommand "installer-test"
     : > "$CALLS_LOG"
     export PATH="$ROOT/bin:$PATH"
     mkdir -p "$ROOT/bin" "$ROOT/mnt" "$ROOT/identity"
+    INSTALL="${../pkgs/librepod-install/install.sh}"
     cat > "$ROOT/identity/identity.nix" <<'EOF'
     { ... }: { }
     EOF
@@ -43,7 +44,13 @@ pkgs.runCommand "installer-test"
            DISKO_BIN="$ROOT/bin/disko" NIXOS_INSTALL_BIN="$ROOT/bin/nixos-install" \
            NIX_BIN="$ROOT/bin/nix"
 
-    bash "${../pkgs/librepod-install/install.sh}" \
+    # ---- scenario 0: flag missing its value → usage, not a crash ------------
+    if bash "$INSTALL" --device >/dev/null 2>&1; then
+      echo "FAIL: missing flag value not rejected"; exit 1
+    fi
+
+    # ---- scenario 1: profile-name device form --------------------------------
+    bash "$INSTALL" \
       --device lenovo-m710q --name pod-test --os-tag v0.3.5 \
       --identity "$ROOT/identity/identity.nix"
 
@@ -61,6 +68,19 @@ pkgs.runCommand "installer-test"
       || { echo "FAIL: identity not referenced"; exit 1; }
     [ "$(stat -c %a "$ROOT/mnt/etc/nixos/identity.nix")" = "600" ] \
       || { echo "FAIL: identity.nix not 0600"; exit 1; }
+
+    # ---- scenario 2: module-path device form ---------------------------------
+    : > "$CALLS_LOG"
+    echo '{ ... }: { }' > "$ROOT/my-hardware.nix"
+    bash "$INSTALL" \
+      --device "$ROOT/my-hardware.nix" --name pod-test --os-tag v0.3.5 \
+      --identity "$ROOT/identity/identity.nix"
+
+    # path form must land as a Nix path, not a quoted ./hw/<name> string
+    grep -q 'device = \./hardware\.nix;' "$ROOT/mnt/etc/nixos/flake.nix" \
+      || { echo "FAIL: module-path device not emitted as a path"; exit 1; }
+    [ -f "$ROOT/mnt/etc/nixos/hardware.nix" ] \
+      || { echo "FAIL: hardware module not installed next to the flake"; exit 1; }
 
     echo "installer scenarios passed"
     touch $out

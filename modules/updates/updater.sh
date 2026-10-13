@@ -1,38 +1,22 @@
-#!/usr/bin/env bash
 # LibrePod OS updater — poll consent, validate, repin, apply, stage sentinel.
 # Spec: docs/superpowers/specs/2026-10-10-device-layer-os-updates-design.md
-# All state-changing commands are env-overridable for the stub test.
-set -euo pipefail
+# (common.sh is prepended by modules/updates/default.nix.)
 
-FLAKE_DIR="${LIBREPOD_FLAKE_DIR:-/etc/nixos}"
-STATE_DIR="${LIBREPOD_STATE_DIR:-/var/lib/librepod}"
-NODE_NAME="${LIBREPOD_NODE_NAME:-$(hostname)}"
-NS="${LIBREPOD_CM_NAMESPACE:-librepod-os}"
-KUBECTL="${KUBECTL:-k3s kubectl}"
 NIX_BIN="${NIX_BIN:-nix}"
-NIX_ENV_BIN="${NIX_ENV_BIN:-nix-env}"
-SYSTEMCTL="${SYSTEMCTL:-systemctl}"
-PROFILE="/nix/var/nix/profiles/system"
 
-# shellcheck disable=SC2086  # KUBECTL may be multiple words ("k3s kubectl")
-kctl() { $KUBECTL "$@"; }
+die() { report failed "$1"; exit 1; }
 
-current_version() {
-  jq -r '.nodes.librepod.original.ref // "unknown"' "$FLAKE_DIR/flake.lock" 2>/dev/null || echo "unknown"
+# Stamp/heal librepod.os/version from the lock: first boot (discovery gate
+# for the Marketplace card, design: within 5 min) and self-heal for a label
+# dropped at sentinel commit time. Idempotent — runs on every poll.
+reconcile_label() {
+  local cv labelled
+  cv="$(current_version)"
+  [ "$cv" != "unknown" ] || return 0
+  labelled="$(kctl get node "$NODE_NAME" -o 'jsonpath={.metadata.labels.librepod\.os/version}' 2>/dev/null || true)"
+  [ "$labelled" = "$cv" ] \
+    || kctl label node "$NODE_NAME" "librepod.os/version=$cv" --overwrite >/dev/null 2>&1 || true
 }
-
-report() { # state, detail, currentVersion
-  local now; now="$(date -u +%FT%TZ)"
-  local json
-  json=$(jq -n \
-    --arg cv "$3" --arg st "$1" --arg ts "$now" --arg d "$2" \
-    '{currentVersion:$cv, state:$st, lastTransition:$ts, detail:$d}')
-  kctl -n "$NS" patch configmap "$NODE_NAME" --type merge \
-    -p "$(jq -n --arg s "$json" '{data:{"status.json":$s}}')" >/dev/null 2>&1 || true
-  echo "[librepod-updater][$1] $2"
-}
-
-die() { report failed "$1" "$(current_version)"; exit 1; }
 
 # ---- 1. ensure ConfigMap exists (first boot: create + stamp status) --------
 if ! kctl -n "$NS" get configmap "$NODE_NAME" >/dev/null 2>&1; then
@@ -42,11 +26,12 @@ if ! kctl -n "$NS" get configmap "$NODE_NAME" >/dev/null 2>&1; then
 fi
 
 CURRENT="$(current_version)"
+reconcile_label
+
 SPEC_JSON="$(kctl -n "$NS" get configmap "$NODE_NAME" -o 'jsonpath={.data.spec\.json}' 2>/dev/null || true)"
 
 if [ -z "$SPEC_JSON" ] || [ "$SPEC_JSON" = "null" ]; then
-  report idle "no spec" "$CURRENT"
-  exit 0
+  report idle "no spec"; exit 0
 fi
 
 DESIRED="$(echo "$SPEC_JSON" | jq -r '.desiredVersion // empty')"
@@ -56,14 +41,14 @@ WINDOW="$(echo "$SPEC_JSON" | jq -r '.policy.window // empty')"
 
 # ---- 2. gate ----------------------------------------------------------------
 if [ -z "$DESIRED" ]; then
-  report idle "no desiredVersion" "$CURRENT"; exit 0
+  report idle "no desiredVersion"; exit 0
 fi
 # Global constraint: tags only, ever.
 if ! [[ "$DESIRED" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  report idle "rejected: desiredVersion '$DESIRED' is not a release tag" "$CURRENT"; exit 0
+  report idle "rejected: desiredVersion '$DESIRED' is not a release tag"; exit 0
 fi
 if [ "$DESIRED" = "$CURRENT" ]; then
-  report idle "up to date" "$CURRENT"; exit 0
+  report idle "up to date"; exit 0
 fi
 
 if [ "$APPLY" = "now" ]; then
@@ -76,19 +61,24 @@ else
     local lo hi
     lo="${WINDOW%%-*}"; hi="${WINDOW##*-}"
     lo="${lo%%:*}"; hi="${hi%%:*}"
-    [ "$h" -ge "$lo" ] && [ "$h" -lt "$hi" ]
+    if [ "$lo" -gt "$hi" ]; then   # window crosses midnight (e.g. 22:00-06:00)
+      [ "$h" -ge "$lo" ] || [ "$h" -lt "$hi" ]
+    else
+      [ "$h" -ge "$lo" ] && [ "$h" -lt "$hi" ]
+    fi
   }
   if [ "$UNATTENDED" != "true" ] || ! in_window; then
-    report idle "waiting: consent or window" "$CURRENT"; exit 0
+    report idle "waiting: consent or window"; exit 0
   fi
   if [ "$CURRENT" != "unknown" ] \
      && ! [ "$(printf '%s\n%s\n' "$CURRENT" "$DESIRED" | sort -V | tail -1)" = "$DESIRED" ]; then
-    report idle "rejected: unattended downgrade to $DESIRED" "$CURRENT"; exit 0
+    report idle "rejected: unattended downgrade to $DESIRED"; exit 0
   fi
 fi
 
 # ---- 3. repin ----------------------------------------------------------------
-report building "repinning to $DESIRED" "$CURRENT"
+report building "repinning to $DESIRED"
+backup_pin   # sentinel restores this on rollback or stale-flag clear
 if ! grep -q 'inputs\.librepod\.url = "github:librepod/os/v[0-9.]*"' "$FLAKE_DIR/flake.nix"; then
   die "pin line not found in $FLAKE_DIR/flake.nix — refusing to edit unknown file"
 fi
@@ -103,13 +93,13 @@ OUT="$("$NIX_BIN" build --no-link --print-out-paths \
 
 [ -e "$OUT/nixos-version" ] || die "build output missing nixos-version — refusing to activate"
 
-PREV="$(readlink "$PROFILE" || true)"
+# -f: profile symlinks are relative generation links (system-N-link)
+PREV="$(readlink -f "$PROFILE" || true)"
 "$NIX_ENV_BIN" -p "$PROFILE" --set "$OUT"
 "$OUT/bin/switch-to-configuration" boot
 
 # ---- 5. stage sentinel + reboot ------------------------------------------------
-mkdir -p "$STATE_DIR"
 jq -nc --arg from "${PREV:-none}" --arg to "$DESIRED" \
   '{from:$from, to:$to, stagedAt:(now|todate)}' > "$STATE_DIR/update-pending"
-report verifying "rebooting into $DESIRED; sentinel will verify" "$DESIRED"
+report verifying "rebooting into $DESIRED; sentinel will verify"
 "$SYSTEMCTL" reboot
