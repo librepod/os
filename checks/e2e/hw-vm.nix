@@ -13,6 +13,12 @@
 
   boot.loader.systemd-boot.enable = true;
   boot.loader.efi.canTouchEfiVariables = true;
+
+  # The E2E release repo's flake.lock uses path nodes (no git rev), while the
+  # host prebuild evaluates against github-locked inputs; the default
+  # system.nixos.version embeds that rev, so the two evals would produce
+  # differently-named (unsubstitutable) toplevels. Pin it rev-free.
+  system.nixos.version = "25.11";
   boot.initrd.availableKernelModules = [
     "virtio_net"
     "virtio_pci"

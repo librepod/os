@@ -144,6 +144,11 @@
         nixpkgs.legacyPackages.x86_64-linux.callPackage ./pkgs/librepod-install
           { };
 
+      # Local-only E2E (KVM): nix build .#updates-e2e — deliberately NOT in checks.*
+      updates-e2e = nixpkgs.legacyPackages.x86_64-linux.callPackage ./checks/e2e {
+        inherit self nixpkgs;
+      };
+
       # Verify all modules can be evaluated without error.
       checks.x86_64-linux =
         let
