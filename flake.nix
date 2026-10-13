@@ -31,6 +31,25 @@
         projectRootFile = "flake.nix";
         programs.nixfmt.enable = true;
       };
+
+      # The appliance base stack. Shared verbatim by mkDevice and the E2E
+      # test node so the VM runs exactly what a device runs.
+      applianceModules = [
+        # Pinned k3s from this os release
+        {
+          nixpkgs.overlays = [ self.overlays.default ];
+        }
+        disko.nixosModules.disko
+        # Appliance base stack — identity extends, not replaces
+        self.nixosModules.common
+        self.nixosModules.networking
+        self.nixosModules.nix
+        self.nixosModules.ssh
+        self.nixosModules.users
+        self.nixosModules.usb-automount
+        self.nixosModules.k3s
+        self.nixosModules.updates
+      ];
     in
     {
       # Overlay that pins k3s to a specific version via k3s-nixpkgs.
@@ -66,6 +85,8 @@
       };
 
       lib = {
+        applianceModules = applianceModules;
+
         # Creates a NixOS configuration with standard modules (disko).
         # Args:
         #   path    — path to the machine directory (must contain default.nix)
@@ -106,26 +127,16 @@
                 inherit nixpkgs disko;
               };
             };
-            modules = [
-              # Pinned k3s from this os release
-              { nixpkgs.overlays = [ self.overlays.default ]; }
-              disko.nixosModules.disko
-              # Appliance base stack — identity extends, not replaces
-              self.nixosModules.common
-              self.nixosModules.networking
-              self.nixosModules.nix
-              self.nixosModules.ssh
-              self.nixosModules.users
-              self.nixosModules.usb-automount
-              self.nixosModules.k3s
-              self.nixosModules.updates
-              # Supported profile by name, or a consumer-supplied module path
-              (if builtins.isString device then (./hw + "/${device}") else device)
-              { networking.hostName = name; }
-              # Appliances are updateable; identity can override (mkDefault).
-              { librepod.updates.enable = nixpkgs.lib.mkDefault true; }
-            ]
-            ++ modules;
+            modules =
+              applianceModules
+              ++ [
+                # Supported profile by name, or a consumer-supplied module path
+                (if builtins.isString device then (./hw + "/${device}") else device)
+                { networking.hostName = name; }
+                # Appliances are updateable; identity can override (mkDefault).
+                { librepod.updates.enable = nixpkgs.lib.mkDefault true; }
+              ]
+              ++ modules;
           };
       };
 
