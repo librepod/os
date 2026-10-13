@@ -6,7 +6,8 @@
 
 FLAKE_DIR="${LIBREPOD_FLAKE_DIR:-/etc/nixos}"
 STATE_DIR="${LIBREPOD_STATE_DIR:-/var/lib/librepod}"
-NODE_NAME="${LIBREPOD_NODE_NAME:-$(hostname)}"
+# /proc, not `hostname`: the service PATH carries no hostname binary.
+NODE_NAME="${LIBREPOD_NODE_NAME:-$(cat /proc/sys/kernel/hostname)}"
 NS="${LIBREPOD_CM_NAMESPACE:-librepod-os}"
 KUBECTL="${KUBECTL:-k3s kubectl}"
 NIX_ENV_BIN="${NIX_ENV_BIN:-nix-env}"

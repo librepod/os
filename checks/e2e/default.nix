@@ -143,5 +143,14 @@ hostPkgs.testers.runNixOSTest {
     assert out == "${topPath.v0_3_5}", f"substitution failed: {out} != ${topPath.v0_3_5}"
 
     assert marker() == "v0.3.5"
+
+    # ---- phase 1: first updater run → label stamped, idle ----------------
+    machine.succeed("systemctl start librepod-updater.service")
+    machine.wait_until_succeeds(
+        "k3s kubectl get node pod-e2e -o json"
+        " | jq -e '.metadata.labels[\"librepod.os/version\"] == \"v0.3.5\"'",
+        timeout=120,
+    )
+    assert status()["state"] == "idle"
   '';
 }

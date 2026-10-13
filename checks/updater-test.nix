@@ -172,6 +172,20 @@ pkgs.runCommand "updater-test"
       || { echo "FAIL: custom URI prefix not repinned"; exit 1; }
     unset LIBREPOD_URI_PREFIX
 
+    # ---- scenario 6: NODE_NAME falls back to the kernel hostname ---------
+    # (E2E found this: the service PATH has no `hostname` binary.)
+    : > "$LOG"
+    export SPEC_FILE="$STUBS/spec-hn.json"
+    echo '{}' > "$SPEC_FILE"   # no desiredVersion → idle, label reconcile still runs
+    pin v0.3.5
+    lock v0.3.5
+    unset LIBREPOD_NODE_NAME
+    HN="$(cat /proc/sys/kernel/hostname)"
+    bash "$UPDATER"
+    grep -q "label node $HN librepod.os/version=v0.3.5" "$LOG" \
+      || { echo "FAIL: hostname fallback broken"; exit 1; }
+    export LIBREPOD_NODE_NAME="pod-test"
+
     echo "updater scenarios passed"
     touch $out
   ''
