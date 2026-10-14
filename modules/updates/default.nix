@@ -83,6 +83,24 @@ in
       };
     };
 
+    # Resends the rolled_back status after a rollback reboot: the sentinel's
+    # original report goes through kubectl, which is down on the broken
+    # generation. The sentinel binary self-dispatches on the stash.
+    systemd.services.librepod-rollback-report = {
+      description = "LibrePod update sentinel — deliver the stashed rollback status";
+      wantedBy = [ "multi-user.target" ];
+      after = [
+        "network-online.target"
+        "k3s.service"
+      ];
+      wants = [ "network-online.target" ];
+      unitConfig.ConditionPathExists = "${stateDir}/rollback-pending";
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${sentinel}/bin/librepod-update-sentinel";
+      };
+    };
+
     # Appliance GC: keep ~a month of generations for rollback; identity may override.
     nix.gc = lib.mkDefault {
       automatic = true;

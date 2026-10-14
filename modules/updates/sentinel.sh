@@ -8,7 +8,19 @@ STABLE="${LIBREPOD_HEALTH_STABLE:-120}"
 INTERVAL="${LIBREPOD_POLL_INTERVAL:-15}"
 
 PENDING="$STATE_DIR/update-pending"
-[ -f "$PENDING" ] || exit 0   # nothing staged (unit condition also gates this)
+STASH="$STATE_DIR/rollback-pending"
+
+if [ ! -f "$PENDING" ]; then
+  # Post-rollback boot: the rolled_back report couldn't land while the
+  # broken generation's k3s was down. Resend it now that the cluster is
+  # back (the librepod-rollback-report unit runs us for exactly this).
+  if [ -f "$STASH" ]; then
+    TO="$(jq -r '.to' "$STASH")"
+    rm -f "$STASH"
+    report rolled_back "update to $TO rolled back after failed health checks"
+  fi
+  exit 0
+fi
 
 FROM="$(jq -r '.from' "$PENDING")"
 TO="$(jq -r '.to' "$PENDING")"
@@ -48,6 +60,9 @@ while :; do
     if [ "$(date +%s)" -ge "$deadline" ]; then
       # ---- rollback ---------------------------------------------------------
       if [ "$FROM" != "none" ] && [ -e "$FROM/bin/switch-to-configuration" ]; then
+        # Stash the intent: the report below goes through kubectl, which is
+        # down on the broken generation — the post-rollback boot resends it.
+        cp "$PENDING" "$STASH"
         # Revert the pin before reporting: report reads the restored lock, and
         # the next updater poll sees DESIRED != CURRENT instead of masking
         # this rollback as "up to date".
@@ -69,7 +84,7 @@ while :; do
 done
 
 # ---- commit -----------------------------------------------------------------
-rm -f "$PENDING" "$STATE_DIR"/flake.nix.bak "$STATE_DIR"/flake.lock.bak
+rm -f "$PENDING" "$STASH" "$STATE_DIR"/flake.nix.bak "$STATE_DIR"/flake.lock.bak
 # Label from $TO directly (the lock may be unreadable here); if this call is
 # dropped, the updater's next-poll reconcile_label heals it.
 kctl label node "$NODE_NAME" "librepod.os/version=$TO" --overwrite >/dev/null 2>&1 || true

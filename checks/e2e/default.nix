@@ -87,7 +87,7 @@ hostPkgs.testers.runNixOSTest {
   extraPythonPackages = ps: [ ];
 
   testScript = ''
-    import json
+    import binascii, json, time
 
     def kubectl_json(shellpath):
         return json.loads(machine.succeed(f"k3s kubectl {shellpath} -o json"))
@@ -109,33 +109,36 @@ hostPkgs.testers.runNixOSTest {
             timeout=timeout,
         )
 
-    def wait_reboot_from(bid, timeout=600):
-        # No wait_for_reboot in this driver; poll the boot_id instead. The
-        # machine may go down mid-poll — drop the dead shell and keep polling.
+    def wait_reboot_from(bid=None, timeout=600):
+        # No wait_for_reboot in this driver. Polling the SHELL through a
+        # reboot floods the reconnect with garbage (broken pipes, base64
+        # desync, non-ascii) — count kernel-boot lines in the append-only
+        # console log instead, then reconnect once, cleanly.
+        boots = machine.get_console_log().count("Linux version")
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if machine.get_console_log().count("Linux version") > boots:
+                break
+            time.sleep(5)
+        else:
+            raise Exception("reboot did not happen within timeout")
+        time.sleep(10)  # let the guest settle before reclaiming the shell
         while True:
             try:
-                machine.wait_until_succeeds(
-                    f"test \"$(cat /proc/sys/kernel/random/boot_id)\" != \"{bid}\"",
-                    timeout=timeout,
-                )
-                return
-            except BrokenPipeError:
                 machine.connected = False
-
-    def wait_reboot(timeout=600):
-        bid = machine.succeed("cat /proc/sys/kernel/random/boot_id").strip()
-        wait_reboot_from(bid, timeout)
+                machine.succeed("true")
+                return
+            except (BrokenPipeError, binascii.Error, UnicodeEncodeError):
+                time.sleep(5)
 
     def start_and_reboot(cmd):
         # The command reboots the machine out from under the backdoor shell;
         # the pipe breaks mid-execute and the driver must not die on it.
-        bid = machine.succeed("cat /proc/sys/kernel/random/boot_id").strip()
         try:
             machine.execute(cmd, check_return=False, timeout=300)
-        except BrokenPipeError:
+        except (BrokenPipeError, binascii.Error, UnicodeEncodeError):
             pass
-        machine.connected = False  # what machine.crash() does; forces reconnect
-        wait_reboot_from(bid)
+        wait_reboot_from(None)
 
     # allow_reboot: guest reboots must reset QEMU in-process, not exit it —
     # the updater/sentinel reboot the machine repeatedly.
@@ -161,7 +164,7 @@ hostPkgs.testers.runNixOSTest {
       "    nixosConfigurations.pod-e2e = librepod.lib.mkDevice {\n"
       "      name = \"pod-e2e\";\n"
       "      device = ./hw-vm.nix;\n"
-      "      modules = [ ./identity.nix ${instrPath} ];\n"
+      "      modules = [ ./identity.nix ${instrPath} (librepod + \"/checks/e2e/test-env.nix\") ];\n"
       "    };\n"
       "  };\n"
       "}\n"
@@ -213,5 +216,46 @@ hostPkgs.testers.runNixOSTest {
     machine.succeed("test ! -e /var/lib/librepod/flake.nix.bak")
     machine.succeed("test ! -e /var/lib/librepod/flake.lock.bak")
     assert "v0.4.0" in machine.succeed("grep inputs.librepod.url /etc/nixos/flake.nix")
+
+    # ---- phase 3: broken release v9.9.9 → auto-rollback ------------------
+    machine.succeed(
+        "k3s kubectl -n librepod-os patch cm pod-e2e --type merge"
+        " -p '{\"data\":{\"spec.json\":\"{\\\"desiredVersion\\\":\\\"v9.9.9\\\",\\\"apply\\\":\\\"now\\\"}\"}}'"
+    )
+    start_and_reboot("systemctl start librepod-updater.service")
+
+    # Broken gen: k3s absent, sentinel counting down (90 s), then rollback.
+    machine.wait_until_succeeds(
+        "test \"$(cat /etc/release-marker)\" = v9.9.9", timeout=300
+    )
+    machine.fail("systemctl is-active --quiet k3s")
+    machine.succeed("test -e /var/lib/librepod/update-pending")  # staged while unhealthy
+    wait_reboot_from(timeout=600)  # sentinel rollback reboot
+
+    machine.wait_for_unit("k3s.service", timeout=600)
+
+    # FIRST post-rollback action: withdraw consent before the 2-min updater
+    # timer re-applies v9.9.9 (OnBootSec race — see plan constraints).
+    machine.succeed(
+        "k3s kubectl -n librepod-os patch cm pod-e2e --type merge"
+        " -p '{\"data\":{\"spec.json\":null}}'"
+    )
+
+    machine.wait_until_succeeds(
+        "k3s kubectl get node pod-e2e -o json"
+        " | jq -e '.status.conditions[] | select(.type==\"Ready\") | .status==\"True\"'",
+        timeout=600,
+    )
+
+    assert marker() == "v0.4.0"  # previous generation restored
+    assert "${topPath.v0_4_0}" in machine.succeed(
+        "readlink -f /nix/var/nix/profiles/system"
+    )
+    assert "v0.4.0" in machine.succeed("grep inputs.librepod.url /etc/nixos/flake.nix")
+    machine.succeed(
+        "jq -e '.nodes.librepod.original.ref == \"v0.4.0\"' /etc/nixos/flake.lock"
+    )
+    wait_state("rolled_back", timeout=300)
+    machine.succeed("test ! -e /var/lib/librepod/update-pending")
   '';
 }

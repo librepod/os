@@ -40,6 +40,9 @@ let
           # protocol (/dev/hvc0 root shell) or machine.succeed dies on the
           # first reboot into an updated generation.
           (toString self.inputs.nixpkgs + "/nixos/modules/testing/test-instrumentation.nix")
+          # And keep the test-only service env (git+file pin prefix, fast
+          # sentinel clocks) across generations.
+          ./test-env.nix
           ../stub-identity.nix
         ]
         ++ extraModules;

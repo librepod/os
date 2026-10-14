@@ -30,7 +30,11 @@ pkgs.runCommand "sentinel-test"
     echo "k3s $*" >> "$CALLS_LOG"
     case "$*" in
       *"get node"*) cat "$HEALTH_FILE" 2>/dev/null || true;;
-      *"patch"*|*"label"*|*"create"*) exit 0;;
+      *"patch"*)
+        # KCTL_BROKEN models the broken generation: the cluster is down.
+        [ -z "$KCTL_BROKEN" ] || exit 1
+        exit 0;;
+      *"label"*|*"create"*) exit 0;;
     esac
     EOF
     chmod +x "$ROOT/bin/k3s"
@@ -116,6 +120,27 @@ pkgs.runCommand "sentinel-test"
       || { echo "FAIL: stale flag triggered reboot"; exit 1; }
     [ "$(cat "$ROOT/flake/flake.nix")" = "old-pin" ] \
       || { echo "FAIL: stale clear left the lock claiming an unbooted version"; exit 1; }
+
+    # ---- scenario 4: rollback status survives k3s being down ----------------
+    # The report goes through kubectl, which is dead on the broken gen —
+    # E2E found the status silently lost. The stash must resend it after the
+    # rolled-back generation is up and the cluster answers again.
+    : > "$CALLS_LOG"
+    echo "NotReady" > "$ROOT/health"
+    export KCTL_BROKEN=1
+    echo "{\"from\":\"$ROOT/profiles/prev\",\"to\":\"v9.9.9\"}" > "$ROOT/state/update-pending"
+    ln -sfn new "$ROOT/profiles/system"
+    bash "$SENTINEL"
+    test -f "$ROOT/state/rollback-pending" \
+      || { echo "FAIL: rollback intent not stashed"; exit 1; }
+    # Post-rollback boot: cluster back, sentinel runs again (unit condition:
+    # the stash), the status lands.
+    unset KCTL_BROKEN
+    bash "$SENTINEL"
+    test ! -e "$ROOT/state/rollback-pending" \
+      || { echo "FAIL: rollback stash not cleared after resend"; exit 1; }
+    grep -q "rolled_back" "$CALLS_LOG" \
+      || { echo "FAIL: stashed rolled_back status never resent"; exit 1; }
 
     echo "sentinel scenarios passed"
     touch $out
