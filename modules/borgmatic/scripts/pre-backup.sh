@@ -16,6 +16,15 @@ export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 STORAGE_CLASS=nfs-client
 SKIP_LABEL=backup.libre.pod/disabled
 
+# Replica-count state file. Must live on persistent storage, NOT tmpfs:
+# a reboot mid-backup wipes /run, orphaning the fleet at 0 replicas with Flux
+# suspended (issue #12). borgmatic-recovery.service reruns post-backup at boot
+# if this file survived a reboot. Truncate so entries from an aborted earlier
+# run never leak into this one.
+STATE_FILE=/var/lib/borgmatic/scaled-deployments.txt
+mkdir -p "$(dirname "$STATE_FILE")"
+: > "$STATE_FILE"
+
 # Logging functions
 log_info() {
   echo "LOG:INFO $*"
@@ -101,7 +110,7 @@ if [ -n "$pvc_list" ]; then
 
         log_info "Scaling down: $namespace/$name (replicas $replicas -> 0)"
         if timeout 60 k3s kubectl scale deployment "$name" -n "$namespace" --replicas=0 2>/dev/null; then
-          echo "$namespace $name $replicas" >> /run/borgmatic/scaled-deployments.txt
+          echo "$namespace $name $replicas" >> "$STATE_FILE"
           scaled_count=$((scaled_count + 1))
 
           # Wait for pods to terminate (with timeout)

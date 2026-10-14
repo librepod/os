@@ -17,7 +17,10 @@
 # Helm's three-way strategic merge preserves externally-scaled replicas on
 # upgrade, so the pre-backup script saves replica counts to a state file and
 # the post-backup script restores them explicitly. See post-backup.sh for the
-# full SSA field-ownership explanation.
+# full SSA field-ownership explanation. The state file lives under /var/lib
+# (persistent): if a reboot interrupts the backup window, suspend flags in
+# etcd and replicas=0 survive while /run does not — borgmatic-recovery.service
+# reruns post-backup at boot while the state file exists (issue #12).
 #
 # Dynamic source directories:
 #   A generate-sources script queries k8s for labeled PVCs, resolves their NFS paths
@@ -171,10 +174,31 @@ in
     after = [
       "k3s.service"
       "network-online.target"
+      # Pure ordering (no wants): serialize with boot recovery in case the
+      # Persistent timer fires a catch-up backup while recovery is restoring.
+      "borgmatic-recovery.service"
     ];
     serviceConfig.ExecStartPre = [
       "${pkgs.coreutils}/bin/mkdir -p /run/borgmatic"
       "${generateSourcesScript}/bin/borgmatic-generate-sources"
     ];
+  };
+
+  # Boot-time recovery from a reboot during the backup window (issue #12):
+  # a surviving state file means a backup was interrupted mid-run — the fleet
+  # is at 0 replicas with Flux suspended. Rerun the post-backup script
+  # (resume HelmReleases, scale up from the state file, resume Kustomizations)
+  # before the cluster serves traffic. Every step is idempotent, so reruns on
+  # a stale file are harmless. Skipped entirely when no state file exists.
+  systemd.services.borgmatic-recovery = {
+    description = "Restore workloads after interrupted borgmatic backup";
+    wantedBy = [ "multi-user.target" ];
+    wants = [ "k3s.service" ];
+    after = [ "k3s.service" ];
+    unitConfig.ConditionPathExists = "/var/lib/borgmatic/scaled-deployments.txt";
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${postBackupScript}/bin/borgmatic-post-backup";
+    };
   };
 }
