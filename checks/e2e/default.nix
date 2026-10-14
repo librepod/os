@@ -257,5 +257,23 @@ hostPkgs.testers.runNixOSTest {
     )
     wait_state("rolled_back", timeout=300)
     machine.succeed("test ! -e /var/lib/librepod/update-pending")
+
+    # ---- phase 4: stale flag (power loss mid-flow) → clear, no reboot ----
+    from_before = machine.succeed("readlink -f /nix/var/nix/profiles/system").strip()
+    machine.succeed(
+        f"jq -nc --arg from '{from_before}' --arg to v0.3.5"
+        " '{from:$from,to:$to}' > /var/lib/librepod/update-pending"
+    )
+    machine.succeed("systemctl start librepod-update-sentinel.service")
+    machine.succeed("test ! -e /var/lib/librepod/update-pending")
+    assert marker() == "v0.4.0"  # still the same generation
+    assert (
+        machine.succeed("readlink -f /nix/var/nix/profiles/system").strip()
+        == from_before
+    )
+    # machine never rebooted — uptime not reset:
+    assert int(machine.succeed("cat /proc/uptime").split(".")[0]) > 30
+
+    print("updates-e2e: all scenarios passed")
   '';
 }
