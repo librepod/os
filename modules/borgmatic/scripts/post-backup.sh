@@ -75,8 +75,12 @@ fi
 # We must restore replicas explicitly from the state file written by
 # the pre-backup script. Without this, deployments stay at replicas=0
 # indefinitely.
+#
+# The state file lives under /var/lib (persistent) so that a reboot during
+# the backup window can be recovered: borgmatic-recovery.service reruns this
+# script at boot while the file exists (issue #12).
 log_info "Restoring scaled-down deployments..."
-state_file=/run/borgmatic/scaled-deployments.txt
+state_file=/var/lib/borgmatic/scaled-deployments.txt
 if [ -f "$state_file" ]; then
   restore_count=0
   while read -r namespace name replicas; do
