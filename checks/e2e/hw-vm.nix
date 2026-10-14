@@ -19,6 +19,10 @@
   # system.nixos.version embeds that rev, so the two evals would produce
   # differently-named (unsubstitutable) toplevels. Pin it rev-free.
   system.nixos.version = "25.11";
+
+  # The appliance disables global DHCP — hardware profiles declare their NIC.
+  # net.ifnames=0 (test instrumentation) names the virtio NIC eth0.
+  networking.interfaces.eth0.useDHCP = true;
   boot.initrd.availableKernelModules = [
     "virtio_net"
     "virtio_pci"

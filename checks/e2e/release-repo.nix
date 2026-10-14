@@ -53,6 +53,9 @@ hostPkgs.runCommand "librepod-os-releases"
     mark() {  # tag, marker-text, extra-module ("" for none)
       local extra=""
       [ -n "$3" ] && extra="\n              $3"
+      # Strip the previous tag's lines first — the anchor survives each pass,
+      # so markers (types.lines) would otherwise ACCUMULATE across tags.
+      sed -i -e '/release-marker/d' -e '/mkForce false/d' flake.nix
       sed -i "s|{ networking.hostName = name; }|{ networking.hostName = name; }\n              { environment.etc.\"release-marker\".text = \"$2\"; }$extra|" flake.nix
       git commit -aqm "$1"
       git tag "$1"

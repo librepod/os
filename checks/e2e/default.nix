@@ -102,7 +102,44 @@ hostPkgs.testers.runNixOSTest {
         cm = kubectl_json("-n librepod-os get cm pod-e2e")
         return json.loads(cm["data"].get("status.json", "{}"))
 
-    machine.start()
+    def wait_state(state, timeout=300):
+        machine.wait_until_succeeds(
+            "k3s kubectl -n librepod-os get cm pod-e2e -o json"
+            f" | jq -e '.data[\"status.json\"] | fromjson | .state == \"{state}\"'",
+            timeout=timeout,
+        )
+
+    def wait_reboot_from(bid, timeout=600):
+        # No wait_for_reboot in this driver; poll the boot_id instead. The
+        # machine may go down mid-poll — drop the dead shell and keep polling.
+        while True:
+            try:
+                machine.wait_until_succeeds(
+                    f"test \"$(cat /proc/sys/kernel/random/boot_id)\" != \"{bid}\"",
+                    timeout=timeout,
+                )
+                return
+            except BrokenPipeError:
+                machine.connected = False
+
+    def wait_reboot(timeout=600):
+        bid = machine.succeed("cat /proc/sys/kernel/random/boot_id").strip()
+        wait_reboot_from(bid, timeout)
+
+    def start_and_reboot(cmd):
+        # The command reboots the machine out from under the backdoor shell;
+        # the pipe breaks mid-execute and the driver must not die on it.
+        bid = machine.succeed("cat /proc/sys/kernel/random/boot_id").strip()
+        try:
+            machine.execute(cmd, check_return=False, timeout=300)
+        except BrokenPipeError:
+            pass
+        machine.connected = False  # what machine.crash() does; forces reconnect
+        wait_reboot_from(bid)
+
+    # allow_reboot: guest reboots must reset QEMU in-process, not exit it —
+    # the updater/sentinel reboot the machine repeatedly.
+    machine.start(allow_reboot=True)
 
     # ---- phase 0: boot, k3s, device flake, substitution gate -------------
     machine.wait_for_unit("k3s.service", timeout=600)
@@ -152,5 +189,29 @@ hostPkgs.testers.runNixOSTest {
         timeout=120,
     )
     assert status()["state"] == "idle"
+
+    # ---- phase 2: consent update v0.3.5 → v0.4.0 → commit ----------------
+    machine.succeed(
+        "k3s kubectl -n librepod-os patch cm pod-e2e --type merge"
+        " -p '{\"data\":{\"spec.json\":\"{\\\"desiredVersion\\\":\\\"v0.4.0\\\",\\\"apply\\\":\\\"now\\\"}\"}}'"
+    )
+    # The updater reboots the machine mid-command; the shell dies with it.
+    start_and_reboot("systemctl start librepod-updater.service")
+
+    machine.wait_for_unit("k3s.service", timeout=600)
+    machine.wait_until_succeeds(
+        "k3s kubectl get node pod-e2e -o json"
+        " | jq -e '.status.conditions[] | select(.type==\"Ready\") | .status==\"True\"'",
+        timeout=600,
+    )
+    wait_state("done", timeout=300)
+
+    assert marker() == "v0.4.0"
+    assert node_label() == "v0.4.0"
+    assert "${topPath.v0_4_0}" in machine.succeed("readlink -f /nix/var/nix/profiles/system")
+    machine.succeed("test ! -e /var/lib/librepod/update-pending")
+    machine.succeed("test ! -e /var/lib/librepod/flake.nix.bak")
+    machine.succeed("test ! -e /var/lib/librepod/flake.lock.bak")
+    assert "v0.4.0" in machine.succeed("grep inputs.librepod.url /etc/nixos/flake.nix")
   '';
 }
