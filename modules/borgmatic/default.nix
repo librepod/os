@@ -46,6 +46,11 @@ let
   repoPath = "/media/USB DISK/borg-repo";
   mountPoint = "/media/USB DISK";
 
+  # Single source of truth for the replica-state file path (issue #12):
+  # substituted into both hook scripts (@STATE_FILE@) and used by
+  # borgmatic-recovery.service's ConditionPathExists.
+  stateFilePath = "/var/lib/borgmatic/scaled-deployments.txt";
+
   ensureRepoScript = pkgs.writeShellApplication {
     name = "borgmatic-ensure-repo";
     runtimeInputs = with pkgs; [
@@ -85,7 +90,14 @@ let
       jq
       coreutils
     ];
-    text = builtins.readFile ./scripts/pre-backup.sh;
+    text =
+      builtins.replaceStrings
+        [ "@STATE_FILE@" "@POST_BACKUP@" ]
+        [
+          stateFilePath
+          "${postBackupScript}/bin/borgmatic-post-backup"
+        ]
+        (builtins.readFile ./scripts/pre-backup.sh);
   };
 
   postBackupScript = pkgs.writeShellApplication {
@@ -95,7 +107,29 @@ let
       fluxcd
       coreutils
     ];
-    text = builtins.readFile ./scripts/post-backup.sh;
+    text = builtins.replaceStrings [ "@STATE_FILE@" ] [ stateFilePath ] (
+      builtins.readFile ./scripts/post-backup.sh
+    );
+  };
+
+  # Recovery entry point. Newly-wanted units are started by `nixos-rebuild
+  # switch` too, not just at boot — so deploying this module during the backup
+  # window would otherwise run post-backup mid-borg-create and delete the state
+  # file under the running backup. borgmatic.service is Type=oneshot, so it
+  # reports ActiveState=activating while its hooks run: anything but
+  # inactive/failed means a backup is in flight and its own post-backup hook
+  # will do the restore.
+  recoveryScript = pkgs.writeShellApplication {
+    name = "borgmatic-recovery";
+    runtimeInputs = with pkgs; [ systemd ];
+    text = ''
+      state=$(systemctl show -p ActiveState --value borgmatic.service 2>/dev/null || echo inactive)
+      if [ "$state" != inactive ] && [ "$state" != failed ]; then
+        echo "LOG:INFO borgmatic.service is '$state' — backup in flight, its post-backup hook will restore the fleet"
+        exit 0
+      fi
+      exec ${postBackupScript}/bin/borgmatic-post-backup
+    '';
   };
 
   # Generate structured borgmatic config, then prepend the <<: !include directive.
@@ -196,10 +230,16 @@ in
     wantedBy = [ "multi-user.target" ];
     wants = [ "k3s.service" ];
     after = [ "k3s.service" ];
-    unitConfig.ConditionPathExists = "/var/lib/borgmatic/scaled-deployments.txt";
+    unitConfig.ConditionPathExists = stateFilePath;
     serviceConfig = {
       Type = "oneshot";
-      ExecStart = "${postBackupScript}/bin/borgmatic-post-backup";
+      StateDirectory = "borgmatic";
+      ExecStart = "${recoveryScript}/bin/borgmatic-recovery";
+      # A failed boot-time attempt (e.g. Flux controllers not Ready yet at
+      # cold boot) must not strand the fleet at 0 replicas: the state file is
+      # only consumed on full success, so retry until it is.
+      Restart = "on-failure";
+      RestartSec = 60;
     };
   };
 }

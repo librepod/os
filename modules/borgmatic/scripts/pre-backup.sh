@@ -16,15 +16,6 @@ export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 STORAGE_CLASS=nfs-client
 SKIP_LABEL=backup.libre.pod/disabled
 
-# Replica-count state file. Must live on persistent storage, NOT tmpfs:
-# a reboot mid-backup wipes /run, orphaning the fleet at 0 replicas with Flux
-# suspended (issue #12). borgmatic-recovery.service reruns post-backup at boot
-# if this file survived a reboot. Truncate so entries from an aborted earlier
-# run never leak into this one.
-STATE_FILE=/var/lib/borgmatic/scaled-deployments.txt
-mkdir -p "$(dirname "$STATE_FILE")"
-: > "$STATE_FILE"
-
 # Logging functions
 log_info() {
   echo "LOG:INFO $*"
@@ -33,6 +24,28 @@ log_info() {
 log_error() {
   echo "LOG:ERROR $*" >&2
 }
+
+# Replica-count state file. @STATE_FILE@ is substituted from default.nix —
+# the single source of truth, shared with borgmatic-recovery.service's
+# ConditionPathExists. Must live on persistent storage, NOT tmpfs: a reboot
+# mid-backup wipes /run, orphaning the fleet at 0 replicas with Flux
+# suspended (issue #12).
+#
+# A leftover file means the previous run ended without a successful restore
+# (reboot, SIGKILL, OOM, systemctl stop). Its replica counts are the only
+# record of the fleet's desired size — never truncate them: re-capturing
+# spec.replicas now would record 0 for every scaled-down deployment and
+# poison every later restore. Restore the fleet first, then record fresh
+# counts below as we scale down again.
+STATE_FILE="@STATE_FILE@"
+mkdir -p "$(dirname "$STATE_FILE")"
+if [ -f "$STATE_FILE" ]; then
+  log_info "Leftover state file — previous run never restored; restoring fleet before scaling down again"
+  "@POST_BACKUP@" || {
+    log_error "Restore from aborted run failed; aborting this backup run"
+    exit 1
+  }
+fi
 
 log_info "Starting pre-backup script..."
 
@@ -108,15 +121,24 @@ if [ -n "$pvc_list" ]; then
         replicas=$(k3s kubectl get deployment "$name" -n "$namespace" \
           -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "1")
 
+        if ! [[ "$replicas" =~ ^[0-9]+$ ]] || [ "$replicas" -lt 1 ]; then
+          # Already at 0 (or unknown): nothing to save. Recording 0 here is
+          # exactly how an aborted run poisons the state file.
+          log_info "Skipping $namespace/$name: replicas=$replicas (already down or unknown)"
+          continue
+        fi
+
         log_info "Scaling down: $namespace/$name (replicas $replicas -> 0)"
         if timeout 60 k3s kubectl scale deployment "$name" -n "$namespace" --replicas=0 2>/dev/null; then
           echo "$namespace $name $replicas" >> "$STATE_FILE"
           scaled_count=$((scaled_count + 1))
 
-          # Wait for pods to terminate (with timeout)
-          timeout 120 k3s kubectl wait --for=delete pods \
-            -l "app.kubernetes.io/instance=$name" \
-            -n "$namespace" --timeout=120s 2>/dev/null || true
+          # Wait for the scale-down to complete before borg reads the PVC.
+          # rollout status succeeds once the deployment reports 0/0 — a
+          # label-based pod wait silently matches nothing when pods lack
+          # app.kubernetes.io/instance=<deployment name>.
+          k3s kubectl rollout status deployment "$name" -n "$namespace" \
+            --timeout=120s 2>/dev/null || true
         else
           log_error "Failed to scale down: $namespace/$name"
         fi
