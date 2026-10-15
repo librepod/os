@@ -77,7 +77,8 @@ fi
 # the pre-backup script. Without this, deployments stay at replicas=0
 # indefinitely.
 log_info "Restoring scaled-down deployments..."
-state_file=/run/duplicati/scaled-deployments.txt
+state_file="@STATE_FILE@"
+restore_failed=0
 if [ -f "$state_file" ]; then
   restore_count=0
   while read -r namespace name replicas; do
@@ -86,12 +87,12 @@ if [ -f "$state_file" ]; then
     log_info "Scaling up: $namespace/$name (replicas -> $replicas)"
     k3s kubectl scale deployment "$name" -n "$namespace" --replicas="$replicas" 2>/dev/null || {
       log_error "Failed to scale up: $namespace/$name"
+      restore_failed=1
       continue
     }
     restore_count=$((restore_count + 1))
   done < "$state_file"
   log_info "Restored $restore_count deployments"
-  rm -f "$state_file"
 else
   log_info "No scaled-deployments state file found — nothing to restore"
 fi
@@ -107,6 +108,16 @@ flux resume kustomization --all --namespace flux-system || {
   exit 1
 }
 log_info "FluxCD Kustomizations resumed and reconciled"
+
+# Consume the state file only after FULL success (scale-ups and Kustomization
+# resume): it is the trigger for duplicati-recovery.service at boot and the
+# replica record pre-backup self-heals from. Removing it earlier would make a
+# failed or interrupted restore unrecoverable.
+if [ "$restore_failed" -eq 1 ]; then
+  log_error "Keeping $state_file — some deployments failed to scale up; recovery will retry"
+  exit 1
+fi
+rm -f "$state_file"
 
 log_info "Post-backup script completed successfully"
 exit 0
