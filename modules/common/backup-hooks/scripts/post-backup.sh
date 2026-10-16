@@ -76,9 +76,9 @@ fi
 # the pre-backup script. Without this, deployments stay at replicas=0
 # indefinitely.
 #
-# The state file lives under /var/lib (persistent) so that a reboot during
-# the backup window can be recovered: borgmatic-recovery.service reruns this
-# script at boot while the file exists (issue #12).
+# The state file is persistent (see pre-backup.sh) so a reboot during the
+# backup window is recoverable: the recovery unit reruns this script at boot
+# while the file exists (issue #12).
 log_info "Restoring scaled-down deployments..."
 state_file="@STATE_FILE@"
 restore_failed=0

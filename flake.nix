@@ -391,7 +391,7 @@
           # Which PVCs borgmatic backs up and scales down (one filter for both scripts).
           borgmatic-pvcs =
             let
-              filter = ./modules/borgmatic/scripts/backup-pvcs.jq;
+              filter = ./modules/common/backup-hooks/scripts/backup-pvcs.jq;
             in
             pkgs.runCommand "borgmatic-pvcs" { nativeBuildInputs = [ pkgs.jq ]; } ''
               # -Z: an unbound PVC's line ends with an empty volumeName
