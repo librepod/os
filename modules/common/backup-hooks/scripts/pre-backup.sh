@@ -1,23 +1,15 @@
 set -euo pipefail
 
-# Pre-backup script for Duplicati with FluxCD integration
-#
-# This script prepares the cluster for a consistent backup by:
-# 1. Suspending FluxCD Kustomization reconciliation
-# 2. Suspending HelmReleases (independent controller from Kustomizations)
-# 3. Scaling down deployments that use PVCs
-# 4. Waiting for pods to terminate
-#
-# After backup completes, the post-backup script resumes Flux reconciliation,
-# which restores all workloads to their desired Git state.
+# Shared pre-backup hook (used by the borgmatic and duplicati modules):
+# suspend Flux, scale PVC-backed deployments to 0 recording replica counts,
+# wait for termination. Post-backup restores the fleet to its Git state.
 
 # Configuration
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 STORAGE_CLASS=nfs-client
 SKIP_LABEL=backup.libre.pod/disabled
 
-# Logging functions for Duplicati integration
-# Messages with these prefixes appear in Duplicati logs
+# Logging functions
 log_info() {
   echo "LOG:INFO $*"
 }
@@ -26,18 +18,11 @@ log_error() {
   echo "LOG:ERROR $*" >&2
 }
 
-# Replica-count state file. @STATE_FILE@ is substituted from per-pvc.nix —
-# the single source of truth, shared with duplicati-recovery.service's
-# ConditionPathExists. Must live on persistent storage, NOT tmpfs: a reboot
-# mid-backup wipes /run, orphaning the fleet at 0 replicas with Flux
-# suspended (issue #12).
-#
-# A leftover file means the previous run ended without a successful restore
-# (reboot, SIGKILL, OOM, systemctl stop). Its replica counts are the only
-# record of the fleet's desired size — never truncate them: re-capturing
-# spec.replicas now would record 0 for every scaled-down deployment and
-# poison every later restore. Restore the fleet first, then record fresh
-# counts below as we scale down again.
+# State file (WAL rule, issue #12): persistent, never tmpfs. Written before
+# scale-down; never truncated (a leftover file = an aborted run whose counts
+# are the only record of desired replica counts — restore from it first);
+# consumed by post-backup only after a fully successful restore. Substituted
+# from modules/common/backup-hooks, the single source of truth.
 STATE_FILE="@STATE_FILE@"
 mkdir -p "$(dirname "$STATE_FILE")"
 if [ -f "$STATE_FILE" ]; then
@@ -134,7 +119,7 @@ if [ -n "$pvc_list" ]; then
           echo "$namespace $name $replicas" >> "$STATE_FILE"
           scaled_count=$((scaled_count + 1))
 
-          # Wait for the scale-down to complete before Duplicati reads the PVC.
+          # Wait for the scale-down to complete before the backup reads the PVC.
           # rollout status succeeds once the deployment reports 0/0 — a
           # label-based pod wait silently matches nothing when pods lack
           # app.kubernetes.io/instance=<deployment name>.

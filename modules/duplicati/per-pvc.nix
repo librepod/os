@@ -27,61 +27,19 @@
 }:
 
 let
-  # Single source of truth for the replica-state file path (issue #12):
-  # substituted into both hook scripts (@STATE_FILE@) and used by
-  # duplicati-recovery.service's ConditionPathExists.
-  stateFilePath = "/var/lib/duplicati/scaled-deployments.txt";
-
-  # Pre/post backup scripts (imported from main module)
-  preBackupScript = pkgs.writeShellApplication {
-    name = "duplicati-pre-backup";
-    runtimeInputs = with pkgs; [
-      k3s
-      fluxcd
-      jq
-      coreutils
-    ];
-    text =
-      builtins.replaceStrings
-        [ "@STATE_FILE@" "@POST_BACKUP@" ]
-        [
-          stateFilePath
-          "${postBackupScript}/bin/duplicati-post-backup"
-        ]
-        (builtins.readFile ./scripts/pre-backup.sh);
+  # Shared pre/post-backup hooks + boot recovery unit (issue #12), built for
+  # this tool by modules/common/backup-hooks.
+  backupHooks = import ../common/backup-hooks {
+    inherit pkgs;
+    toolName = "duplicati";
+    stateFilePath = "/var/lib/duplicati/scaled-deployments.txt";
+    backupUnitName = "duplicati-backup-k3s-per-pvc.service";
   };
 
-  postBackupScript = pkgs.writeShellApplication {
-    name = "duplicati-post-backup";
-    runtimeInputs = with pkgs; [
-      k3s
-      fluxcd
-      coreutils
-    ];
-    text = builtins.replaceStrings [ "@STATE_FILE@" ] [ stateFilePath ] (
-      builtins.readFile ./scripts/post-backup.sh
-    );
-  };
-
-  # Recovery entry point. Newly-wanted units are started by `nixos-rebuild
-  # switch` too, not just at boot — so deploying this module during the backup
-  # window would otherwise run post-backup mid-backup and delete the state file
-  # under the running job. duplicati-backup-k3s-per-pvc.service is Type=oneshot,
-  # so it reports ActiveState=activating while the backup runs: anything but
-  # inactive/failed means a backup is in flight and its own post-backup step
-  # will do the restore.
-  recoveryScript = pkgs.writeShellApplication {
-    name = "duplicati-recovery";
-    runtimeInputs = with pkgs; [ systemd ];
-    text = ''
-      state=$(systemctl show -p ActiveState --value duplicati-backup-k3s-per-pvc.service 2>/dev/null || echo inactive)
-      if [ "$state" != inactive ] && [ "$state" != failed ]; then
-        echo "LOG:INFO duplicati-backup-k3s-per-pvc.service is '$state' — backup in flight, its post-backup step will restore the fleet"
-        exit 0
-      fi
-      exec ${postBackupScript}/bin/duplicati-post-backup
-    '';
-  };
+  inherit (backupHooks)
+    preBackupScript
+    postBackupScript
+    ;
 
   # Per-PVC backup script
   # Discovers all PVCs in Kubernetes and creates a separate backup for each one
@@ -145,27 +103,10 @@ in
 
   # Boot-time recovery from a reboot during the backup window (issue #12):
   # a surviving state file means a backup was interrupted mid-run — the fleet
-  # is at 0 replicas with Flux suspended. Rerun the post-backup script
-  # (resume HelmReleases, scale up from the state file, resume Kustomizations)
-  # before the cluster serves traffic. Every step is idempotent, so reruns on
-  # a stale file are harmless. Skipped entirely when no state file exists.
-  systemd.services.duplicati-recovery = {
-    description = "Restore workloads after interrupted Duplicati backup";
-    wantedBy = [ "multi-user.target" ];
-    wants = [ "k3s.service" ];
-    after = [ "k3s.service" ];
-    unitConfig.ConditionPathExists = stateFilePath;
-    serviceConfig = {
-      Type = "oneshot";
-      StateDirectory = "duplicati";
-      ExecStart = "${recoveryScript}/bin/duplicati-recovery";
-      # A failed boot-time attempt (e.g. Flux controllers not Ready yet at
-      # cold boot) must not strand the fleet at 0 replicas: the state file is
-      # only consumed on full success, so retry until it is.
-      Restart = "on-failure";
-      RestartSec = 60;
-    };
-  };
+  # is at 0 replicas with Flux suspended. The shared recovery unit reruns
+  # post-backup (guarding against a mid-backup `nixos-rebuild switch`) and
+  # retries until the restore fully succeeds.
+  systemd.services.duplicati-recovery = backupHooks.recoveryService;
 
   # Systemd timer for nightly per-PVC backups
   systemd.timers.duplicati-backup-k3s-per-pvc = {

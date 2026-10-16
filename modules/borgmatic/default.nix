@@ -46,10 +46,14 @@ let
   repoPath = "/media/USB DISK/borg-repo";
   mountPoint = "/media/USB DISK";
 
-  # Single source of truth for the replica-state file path (issue #12):
-  # substituted into both hook scripts (@STATE_FILE@) and used by
-  # borgmatic-recovery.service's ConditionPathExists.
-  stateFilePath = "/var/lib/borgmatic/scaled-deployments.txt";
+  # Shared pre/post-backup hooks + boot recovery unit (issue #12), built for
+  # this tool by modules/common/backup-hooks.
+  backupHooks = import ../common/backup-hooks {
+    inherit pkgs;
+    toolName = "borgmatic";
+    stateFilePath = "/var/lib/borgmatic/scaled-deployments.txt";
+    backupUnitName = "borgmatic.service";
+  };
 
   ensureRepoScript = pkgs.writeShellApplication {
     name = "borgmatic-ensure-repo";
@@ -82,55 +86,10 @@ let
     text = builtins.readFile ./scripts/generate-sources.sh;
   };
 
-  preBackupScript = pkgs.writeShellApplication {
-    name = "borgmatic-pre-backup";
-    runtimeInputs = with pkgs; [
-      k3s
-      fluxcd
-      jq
-      coreutils
-    ];
-    text =
-      builtins.replaceStrings
-        [ "@STATE_FILE@" "@POST_BACKUP@" ]
-        [
-          stateFilePath
-          "${postBackupScript}/bin/borgmatic-post-backup"
-        ]
-        (builtins.readFile ./scripts/pre-backup.sh);
-  };
-
-  postBackupScript = pkgs.writeShellApplication {
-    name = "borgmatic-post-backup";
-    runtimeInputs = with pkgs; [
-      k3s
-      fluxcd
-      coreutils
-    ];
-    text = builtins.replaceStrings [ "@STATE_FILE@" ] [ stateFilePath ] (
-      builtins.readFile ./scripts/post-backup.sh
-    );
-  };
-
-  # Recovery entry point. Newly-wanted units are started by `nixos-rebuild
-  # switch` too, not just at boot — so deploying this module during the backup
-  # window would otherwise run post-backup mid-borg-create and delete the state
-  # file under the running backup. borgmatic.service is Type=oneshot, so it
-  # reports ActiveState=activating while its hooks run: anything but
-  # inactive/failed means a backup is in flight and its own post-backup hook
-  # will do the restore.
-  recoveryScript = pkgs.writeShellApplication {
-    name = "borgmatic-recovery";
-    runtimeInputs = with pkgs; [ systemd ];
-    text = ''
-      state=$(systemctl show -p ActiveState --value borgmatic.service 2>/dev/null || echo inactive)
-      if [ "$state" != inactive ] && [ "$state" != failed ]; then
-        echo "LOG:INFO borgmatic.service is '$state' — backup in flight, its post-backup hook will restore the fleet"
-        exit 0
-      fi
-      exec ${postBackupScript}/bin/borgmatic-post-backup
-    '';
-  };
+  inherit (backupHooks)
+    preBackupScript
+    postBackupScript
+    ;
 
   # Generate structured borgmatic config, then prepend the <<: !include directive.
   # pkgs.formats.yaml cannot produce custom YAML tags (like !include) or unquoted
@@ -221,25 +180,8 @@ in
 
   # Boot-time recovery from a reboot during the backup window (issue #12):
   # a surviving state file means a backup was interrupted mid-run — the fleet
-  # is at 0 replicas with Flux suspended. Rerun the post-backup script
-  # (resume HelmReleases, scale up from the state file, resume Kustomizations)
-  # before the cluster serves traffic. Every step is idempotent, so reruns on
-  # a stale file are harmless. Skipped entirely when no state file exists.
-  systemd.services.borgmatic-recovery = {
-    description = "Restore workloads after interrupted borgmatic backup";
-    wantedBy = [ "multi-user.target" ];
-    wants = [ "k3s.service" ];
-    after = [ "k3s.service" ];
-    unitConfig.ConditionPathExists = stateFilePath;
-    serviceConfig = {
-      Type = "oneshot";
-      StateDirectory = "borgmatic";
-      ExecStart = "${recoveryScript}/bin/borgmatic-recovery";
-      # A failed boot-time attempt (e.g. Flux controllers not Ready yet at
-      # cold boot) must not strand the fleet at 0 replicas: the state file is
-      # only consumed on full success, so retry until it is.
-      Restart = "on-failure";
-      RestartSec = 60;
-    };
-  };
+  # is at 0 replicas with Flux suspended. The shared recovery unit reruns
+  # post-backup (guarding against a mid-backup `nixos-rebuild switch`) and
+  # retries until the restore fully succeeds.
+  systemd.services.borgmatic-recovery = backupHooks.recoveryService;
 }
