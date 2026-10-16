@@ -1,6 +1,6 @@
 set -euo pipefail
 
-# Post-backup script for Duplicati with FluxCD integration
+# Post-backup script with FluxCD integration
 #
 # This script restores all workloads after backup completes:
 # 1. Resumes HelmReleases (removes suspend flag)
@@ -32,8 +32,7 @@ set -euo pipefail
 # Configuration
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 
-# Logging functions for Duplicati integration
-# Messages with these prefixes appear in Duplicati logs
+# Logging functions
 log_info() {
   echo "LOG:INFO $*"
 }
@@ -76,8 +75,13 @@ fi
 # We must restore replicas explicitly from the state file written by
 # the pre-backup script. Without this, deployments stay at replicas=0
 # indefinitely.
+#
+# The state file is persistent (see pre-backup.sh) so a reboot during the
+# backup window is recoverable: the recovery unit reruns this script at boot
+# while the file exists (issue #12).
 log_info "Restoring scaled-down deployments..."
-state_file=/run/duplicati/scaled-deployments.txt
+state_file="@STATE_FILE@"
+restore_failed=0
 if [ -f "$state_file" ]; then
   restore_count=0
   while read -r namespace name replicas; do
@@ -86,12 +90,12 @@ if [ -f "$state_file" ]; then
     log_info "Scaling up: $namespace/$name (replicas -> $replicas)"
     k3s kubectl scale deployment "$name" -n "$namespace" --replicas="$replicas" 2>/dev/null || {
       log_error "Failed to scale up: $namespace/$name"
+      restore_failed=1
       continue
     }
     restore_count=$((restore_count + 1))
   done < "$state_file"
   log_info "Restored $restore_count deployments"
-  rm -f "$state_file"
 else
   log_info "No scaled-deployments state file found — nothing to restore"
 fi
@@ -107,6 +111,16 @@ flux resume kustomization --all --namespace flux-system || {
   exit 1
 }
 log_info "FluxCD Kustomizations resumed and reconciled"
+
+# Consume the state file only after FULL success (scale-ups and Kustomization
+# resume): it is the trigger for borgmatic-recovery.service at boot and the
+# replica record pre-backup self-heals from. Removing it earlier would make a
+# failed or interrupted restore unrecoverable.
+if [ "$restore_failed" -eq 1 ]; then
+  log_error "Keeping $state_file — some deployments failed to scale up; recovery will retry"
+  exit 1
+fi
+rm -f "$state_file"
 
 log_info "Post-backup script completed successfully"
 exit 0

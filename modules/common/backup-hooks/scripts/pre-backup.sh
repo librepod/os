@@ -1,15 +1,8 @@
 set -euo pipefail
 
-# Pre-backup script with FluxCD integration
-#
-# This script prepares the cluster for a consistent backup by:
-# 1. Suspending FluxCD Kustomization reconciliation
-# 2. Suspending HelmReleases (independent controller from Kustomizations)
-# 3. Scaling down deployments that use PVCs
-# 4. Waiting for pods to terminate
-#
-# After backup completes, the post-backup script resumes Flux reconciliation,
-# which restores all workloads to their desired Git state.
+# Shared pre-backup hook (used by the borgmatic and duplicati modules):
+# suspend Flux, scale PVC-backed deployments to 0 recording replica counts,
+# wait for termination. Post-backup restores the fleet to its Git state.
 
 # Configuration
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
@@ -24,6 +17,21 @@ log_info() {
 log_error() {
   echo "LOG:ERROR $*" >&2
 }
+
+# State file (WAL rule, issue #12): persistent, never tmpfs. Written before
+# scale-down; never truncated (a leftover file = an aborted run whose counts
+# are the only record of desired replica counts — restore from it first);
+# consumed by post-backup only after a fully successful restore. Substituted
+# from modules/common/backup-hooks, the single source of truth.
+STATE_FILE="@STATE_FILE@"
+mkdir -p "$(dirname "$STATE_FILE")"
+if [ -f "$STATE_FILE" ]; then
+  log_info "Leftover state file — previous run never restored; restoring fleet before scaling down again"
+  "@POST_BACKUP@" || {
+    log_error "Restore from aborted run failed; aborting this backup run"
+    exit 1
+  }
+fi
 
 log_info "Starting pre-backup script..."
 
@@ -99,15 +107,24 @@ if [ -n "$pvc_list" ]; then
         replicas=$(k3s kubectl get deployment "$name" -n "$namespace" \
           -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "1")
 
+        if ! [[ "$replicas" =~ ^[0-9]+$ ]] || [ "$replicas" -lt 1 ]; then
+          # Already at 0 (or unknown): nothing to save. Recording 0 here is
+          # exactly how an aborted run poisons the state file.
+          log_info "Skipping $namespace/$name: replicas=$replicas (already down or unknown)"
+          continue
+        fi
+
         log_info "Scaling down: $namespace/$name (replicas $replicas -> 0)"
         if timeout 60 k3s kubectl scale deployment "$name" -n "$namespace" --replicas=0 2>/dev/null; then
-          echo "$namespace $name $replicas" >> /run/borgmatic/scaled-deployments.txt
+          echo "$namespace $name $replicas" >> "$STATE_FILE"
           scaled_count=$((scaled_count + 1))
 
-          # Wait for pods to terminate (with timeout)
-          timeout 120 k3s kubectl wait --for=delete pods \
-            -l "app.kubernetes.io/instance=$name" \
-            -n "$namespace" --timeout=120s 2>/dev/null || true
+          # Wait for the scale-down to complete before the backup reads the PVC.
+          # rollout status succeeds once the deployment reports 0/0 — a
+          # label-based pod wait silently matches nothing when pods lack
+          # app.kubernetes.io/instance=<deployment name>.
+          k3s kubectl rollout status deployment "$name" -n "$namespace" \
+            --timeout=120s 2>/dev/null || true
         else
           log_error "Failed to scale down: $namespace/$name"
         fi
