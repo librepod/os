@@ -2,7 +2,6 @@
 authorized_keys
 authorizedKey.pub
 *.config
-CLAUDE.md
 machine-ip.txt
 
 # Nix
@@ -22,3 +21,10 @@ Session.vim
 
 .planning/
 docs/superpowers
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+*.gate.lock*
