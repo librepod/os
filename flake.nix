@@ -7,7 +7,9 @@
     # 1. Go to https://github.com/NixOS/nixpkgs/commits/master/pkgs/applications/networking/cluster/k3s
     # 2. Find the commit that has your desired version
     # 3. Update the URL below with that commit
-    k3s-nixpkgs.url = "github:NixOS/nixpkgs/31a116e3307dca596c4ab20a5372d8540cb6d3fd";
+    # 4. Update the versioned attribute (k3s_1_34) in overlays.default below —
+    #    the top-level `k3s` alias drifts to newer minors and gets dropped eventually
+    k3s-nixpkgs.url = "github:NixOS/nixpkgs/1975f10693a3e9b52c356151426410f3b80a7fbb";
 
     disko = {
       url = "github:nix-community/disko";
@@ -36,11 +38,13 @@
       # Overlay that pins k3s to a specific version via k3s-nixpkgs.
       # Consumers should apply this overlay to get the pinned k3s version.
       overlays.default = final: prev: {
+        # Versioned attr, not the `k3s` alias: nixpkgs repoints the alias to
+        # newer minors, which would silently jump the cluster's Kubernetes minor.
         k3s =
           (import k3s-nixpkgs {
             inherit (prev.stdenv) system;
             config.allowUnfree = false;
-          }).k3s;
+          }).k3s_1_34;
       };
 
       nixosModules = {
