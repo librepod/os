@@ -17,6 +17,16 @@
   # Needed because types.attrs in nixpkgs k3s autoDeployCharts uses shallow merge (//).
   values = lib.mkDefault {
     instance = {
+      # Chart default components + source-watcher (requires Flux v2.7.0+,
+      # satisfied by the default distribution.version "2.x").
+      # Lists replace (not merge) in Helm, so all components must be listed.
+      components = [
+        "source-controller"
+        "kustomize-controller"
+        "helm-controller"
+        "notification-controller"
+        "source-watcher"
+      ];
       cluster.size = "small";
       sync = {
         interval = "12h";
