@@ -75,15 +75,20 @@ while :; do
       stable_deadline=$(( $(date +%s) + STABLE ))
     fi
     if [ "$(date +%s)" -ge "$stable_deadline" ]; then
-      break   # healthy and stable — commit
+      # Healthy and stable. Last, once per stable window (GitHub rate limits):
+      # can NEW still fetch updates? One fetch of the release source covers
+      # DNS, HTTPS and the repo. A release that fails it is never committed.
+      "$NIX_BIN" flake metadata --refresh "${URI_PREFIX}${VERSION}" >/dev/null && break
+      echo "[librepod] cannot fetch ${URI_PREFIX}${VERSION}; not committing"
+      stable_deadline=0
     fi
   else
     stable_deadline=0
-    if [ "$(date +%s)" -ge "$deadline" ]; then
-      # OLD is still the default, so a reboot ends the trial; the OLD boot reports it.
-      "$SYSTEMCTL" reboot
-      exit 0
-    fi
+  fi
+  if [ "$stable_deadline" -eq 0 ] && [ "$(date +%s)" -ge "$deadline" ]; then
+    # OLD is still the default, so a reboot ends the trial; the OLD boot reports it.
+    "$SYSTEMCTL" reboot
+    exit 0
   fi
   sleep "$INTERVAL"
 done

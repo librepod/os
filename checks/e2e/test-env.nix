@@ -6,6 +6,7 @@
 {
   systemd.services.librepod-updater.environment.LIBREPOD_URI_PREFIX = "git+file:///srv/os?ref=";
   systemd.services.librepod-update-sentinel.environment = {
+    LIBREPOD_URI_PREFIX = "git+file:///srv/os?ref="; # the fetch check
     LIBREPOD_HEALTH_TIMEOUT = "90";
     LIBREPOD_HEALTH_STABLE = "20";
     LIBREPOD_POLL_INTERVAL = "5";

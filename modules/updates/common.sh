@@ -10,10 +10,14 @@ STATE_DIR="${LIBREPOD_STATE_DIR:-/var/lib/librepod}"
 NODE_NAME="${LIBREPOD_NODE_NAME:-$(cat /proc/sys/kernel/hostname)}"
 NS="${LIBREPOD_CM_NAMESPACE:-librepod-os}"
 KUBECTL="${KUBECTL:-k3s kubectl}"
+NIX_BIN="${NIX_BIN:-nix}"
 NIX_ENV_BIN="${NIX_ENV_BIN:-nix-env}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 PROFILE="${LIBREPOD_PROFILE:-/nix/var/nix/profiles/system}"
 RELEASE_FILE="${LIBREPOD_RELEASE_FILE:-/run/current-system/etc/librepod-release}"
+# Where releases come from: prefix + tag. The E2E suite points this at a
+# local git+file repo. BRE-safe prefixes only (+ ? / : are literal).
+URI_PREFIX="${LIBREPOD_URI_PREFIX:-github:librepod/os/}"
 # What runs now: OLD while the updater stages, NEW on the trial boot.
 CURRENT_SYSTEM="${LIBREPOD_CURRENT_SYSTEM:-/run/current-system}"
 # The updater repins and builds in this copy of FLAKE_DIR; the sentinel

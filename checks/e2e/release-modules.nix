@@ -35,6 +35,15 @@
       };
     };
   };
+  # Runs, but cannot fetch updates, so it would never update again. The VM is
+  # offline and its release source is local, so the fixture points the
+  # sentinel's fetch at a name that never resolves (.invalid) instead.
+  "v9.9.4" =
+    { lib, ... }:
+    {
+      systemd.services.librepod-update-sentinel.environment.LIBREPOD_URI_PREFIX =
+        lib.mkForce "git+https://updates.invalid/os?ref=";
+    };
   # Boots, but k3s never starts.
   "v9.9.9" =
     { lib, ... }:

@@ -22,6 +22,7 @@ let
 
   # Test-only knobs; the scripts read these env vars.
   sentinelEnv = {
+    LIBREPOD_URI_PREFIX = "git+file:///srv/os?ref="; # the fetch check
     LIBREPOD_HEALTH_TIMEOUT = "90";
     LIBREPOD_HEALTH_STABLE = "20";
     LIBREPOD_POLL_INTERVAL = "5";
@@ -139,14 +140,25 @@ hostPkgs.testers.runNixOSTest {
                 time.sleep(5)
         raise Exception("shell did not come back within timeout")
 
-    def start_and_reboot(cmd):
+    def start_and_reboot(cmd, reboots=1):
         # The command reboots the machine out from under the backdoor shell;
         # the pipe breaks mid-execute and the driver must not die on it.
+        boots = pod_e2e.get_console_log().count("Linux version")
         try:
             pod_e2e.execute(cmd, check_return=False, timeout=300)
         except (BrokenPipeError, ValueError):  # binascii.Error, UnicodeEncodeError are ValueErrors
             pass
-        wait_reboot_from()
+        wait_reboot_from(boots + reboots - 1, timeout=600 * reboots)
+
+    def ended_on_old(version, old):
+        # The trial of a bad release is over and the device says so.
+        wait_healthy()
+        wait_state("rolled_back", timeout=300)
+        assert marker() == old
+        assert status()["currentVersion"] == old
+        pod_e2e.succeed(f"grep -qx {version} /var/lib/librepod/failed-versions")
+        pod_e2e.succeed("test ! -e /var/lib/librepod/update-pending")
+        assert old in pod_e2e.succeed("grep inputs.librepod.url /etc/nixos/flake.nix")
 
     def wait_healthy():
         pod_e2e.wait_for_unit("k3s.service", timeout=600)
@@ -339,6 +351,44 @@ hostPkgs.testers.runNixOSTest {
     assert "${topPath.v0_3_5}" in boot_entry()
     pod_e2e.succeed("jq -e '.nodes.librepod.original.ref == \"v0.3.5\"' /etc/nixos/flake.lock")
     pod_e2e.succeed("test ! -e /var/lib/librepod/update-pending")
+
+    # ---- phase 6: a release that does not build → failed, no reboot ------
+    request(4, "v9.9.1")
+    pod_e2e.fail("systemctl start librepod-updater.service")  # the build fails
+    wait_state("failed", timeout=300)
+    assert marker() == "v0.3.5"
+    pod_e2e.succeed("test ! -e /var/lib/librepod/update-pending")
+
+    # Each bad release below must land back on OLD with no help.
+    # ---- phase 7: root never mounts → stage 1 panics and reboots ---------
+    request(5, "v9.9.2")
+    start_and_reboot("systemctl start librepod-updater.service", reboots=2)
+    assert "Kernel panic" in pod_e2e.get_console_log()
+    ended_on_old("v9.9.2", "v0.3.5")
+
+    # ---- phase 8: stage 1 hangs → only a power cut gets out --------------
+    request(6, "v9.9.3")
+    boots = pod_e2e.get_console_log().count("Linux version")
+    try:
+        pod_e2e.execute("systemctl start librepod-updater.service", check_return=False, timeout=300)
+    except (BrokenPipeError, ValueError):  # binascii.Error, UnicodeEncodeError are ValueErrors
+        pass
+    deadline = time.time() + 600
+    while pod_e2e.get_console_log().count("Linux version") <= boots:
+        assert time.time() < deadline, "the trial boot never started"
+        time.sleep(5)
+    time.sleep(60)  # hung in stage 1
+    pod_e2e.crash()
+    pod_e2e.start(allow_reboot=True)  # restarts the console log
+    wait_reboot_from(boots=0)
+    ended_on_old("v9.9.3", "v0.3.5")
+
+    # ---- phase 9: runs, but cannot fetch updates → never committed -------
+    request(7, "v9.9.4")
+    start_and_reboot("systemctl start librepod-updater.service")
+    assert marker() == "v9.9.4"
+    wait_reboot_from(timeout=600)  # the sentinel ends the trial at its deadline
+    ended_on_old("v9.9.4", "v0.3.5")
 
     print("updates-e2e: all scenarios passed")
   '';

@@ -2,12 +2,7 @@
 # Spec: docs/superpowers/specs/2026-10-10-device-layer-os-updates-design.md
 # (common.sh is prepended by modules/updates/default.nix.)
 
-NIX_BIN="${NIX_BIN:-nix}"
 BOOTCTL="${BOOTCTL:-bootctl}"
-
-# Pin location. Default is the real release repo; the E2E suite points this
-# at a local git+file repo. BRE-safe prefixes only (+ ? / : are literal).
-URI_PREFIX="${LIBREPOD_URI_PREFIX:-github:librepod/os/}"
 
 die() { report failed "$1"; exit 1; }
 

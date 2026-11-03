@@ -52,6 +52,14 @@ pkgs.runCommand "sentinel-test"
     EOF
     chmod +x "$ROOT/bin/systemctl"
 
+    # the "can NEW fetch updates?" check
+    cat > "$ROOT/bin/nix" <<EOF
+    #!/bin/sh
+    echo "nix \$*" >> "$CALLS_LOG"
+    [ -z "\$FAKE_NO_FETCH" ]
+    EOF
+    chmod +x "$ROOT/bin/nix"
+
     cat > "$ROOT/bin/nix-env" <<EOF
     #!/bin/sh
     echo "nix-env \$*" >> "$CALLS_LOG"
@@ -102,6 +110,8 @@ pkgs.runCommand "sentinel-test"
     boot new trial
     bash "$SENTINEL"
     committed
+    grep -qx "nix flake metadata --refresh github:librepod/os/v9.9.9" "$CALLS_LOG" \
+      || { echo "FAIL: committed without checking it can fetch updates"; exit 1; }
     grep -q "label node pod-test librepod.os/version=v9.9.9" "$CALLS_LOG" \
       || { echo "FAIL: success label missing"; exit 1; }
     grep -qF 'state\": \"done' "$CALLS_LOG" && grep -qF 'observedRequestId\": 7' "$CALLS_LOG" \
@@ -167,6 +177,17 @@ pkgs.runCommand "sentinel-test"
       || { echo "FAIL: flag not cleared after the interrupted commit"; exit 1; }
     ! grep -q "systemctl reboot" "$CALLS_LOG" \
       || { echo "FAIL: rebooted again on NEW"; exit 1; }
+
+    # ---- scenario 6: healthy, but cannot fetch updates → never committed --
+    echo "True" > "$ROOT/health"
+    echo v0.4.0 > "$ROOT/release"
+    boot new trial
+    FAKE_NO_FETCH=1 bash "$SENTINEL"
+    grep -q "systemctl reboot" "$CALLS_LOG" \
+      || { echo "FAIL: a trial that cannot fetch updates did not end"; exit 1; }
+    ! grep -q "nix-env\|switch-to-configuration" "$CALLS_LOG" \
+      || { echo "FAIL: a trial that cannot fetch updates was committed"; exit 1; }
+    flake_untouched
 
     echo "sentinel scenarios passed"
     touch $out
