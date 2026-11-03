@@ -1,6 +1,7 @@
 # checks/e2e/release-repo.nix — local stand-in for github:librepod/os releases.
-# Three tags from the real flake source; flake.lock inputs are rewritten to
-# store paths so the VM evaluates fully offline. Generated per-run; throwaway.
+# One tag per entry in release-modules.nix, on the real flake source;
+# flake.lock inputs are rewritten to store paths so the VM evaluates fully
+# offline. Generated per-run; throwaway.
 {
   self,
   hostPkgs,
@@ -48,21 +49,14 @@ hostPkgs.runCommand "librepod-os-releases"
     git add -A
     git commit -qm baseline
 
-    # One commit per release; the marker module rides mkDevice's module list
-    # (anchor: the hostname line in flake.nix's mkDevice — keep in sync).
-    mark() {  # tag, marker-text, extra-module ("" for none)
-      local extra=""
-      [ -n "$3" ] && extra="\n              $3"
-      # Strip the previous tag's lines first — the anchor survives each pass,
-      # so markers (types.lines) would otherwise ACCUMULATE across tags.
-      sed -i -e '/release-marker/d' -e '/mkForce false/d' flake.nix
-      sed -i "s|{ networking.hostName = name; }|{ networking.hostName = name; }\n              { environment.etc.\"release-marker\".text = \"$2\"; }$extra|" flake.nix
-      git commit -aqm "$1"
-      git tag "$1"
-    }
-    mark v0.3.5 "v0.3.5" ""
-    mark v0.4.0 "v0.4.0" ""
-    mark v9.9.9 "v9.9.9" "{ services.k3s.enable = nixpkgs.lib.mkForce false; }"
+    # One commit per release: this-release.nix picks the tag's entry, and the
+    # E2E device flake imports it.
+    for tag in ${toString (builtins.attrNames (import ./release-modules.nix))}; do
+      echo "(import ./release-modules.nix).\"$tag\"" > checks/e2e/this-release.nix
+      git add checks/e2e/this-release.nix
+      git commit -qm "$tag"
+      git tag "$tag"
+    done
 
     mkdir -p $out
     cp -r ./. $out/

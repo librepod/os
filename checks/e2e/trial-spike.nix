@@ -70,16 +70,18 @@ hostPkgs.testers.runNixOSTest {
     def boots():
         return console_count("Linux version")
 
-    def reconnect():
+    def reconnect(timeout=300):
         # Same dance as updates-e2e: reclaim the backdoor shell once, cleanly.
+        deadline = time.time() + timeout
         time.sleep(10)
-        while True:
+        while time.time() < deadline:
             try:
                 machine.connected = False
                 machine.succeed("true")
                 return
             except (BrokenPipeError, ValueError):  # binascii.Error, UnicodeEncodeError are ValueErrors
                 time.sleep(5)
+        raise Exception("shell did not come back within timeout")
 
     def reboot():
         n = boots() + 1

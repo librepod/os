@@ -51,7 +51,10 @@ pkgs.runCommand "updater-test"
     #!/bin/sh
     echo "nix \$*" >> "$CALLS_LOG"
     case " \$* " in
-      *" flake update "*) : ;;  # sed already wrote the pin; lock update is a no-op
+      *" flake update "*)  # like real nix: the lock follows the pin in flake.nix
+        for dir; do :; done  # --flake DIR comes last
+        ref="\$(sed -n 's/.*\(v[0-9][0-9.]*\)".*/\1/p' "\$dir/flake.nix")"
+        jq -n --arg r "\$ref" '{nodes:{librepod:{original:{ref:\$r}}}}' > "\$dir/flake.lock";;
       *" build "*) echo "$STUBS/fake-out";;
     esac
     EOF
@@ -113,6 +116,8 @@ pkgs.runCommand "updater-test"
 
     grep -q 'github:librepod/os/v9.9.9' "$FLAKE/flake.nix" \
       || { echo "FAIL: flake.nix not repinned to v9.9.9"; exit 1; }
+    jq -e '.nodes.librepod.original.ref == "v9.9.9"' "$FLAKE/flake.lock" >/dev/null \
+      || { echo "FAIL: flake.lock not updated to v9.9.9"; exit 1; }
     grep -q "nix-env -p /nix/var/nix/profiles/system --set" "$LOG" \
       || { echo "FAIL: profile not set"; exit 1; }
     grep -q "switch-to-configuration boot" "$LOG" \

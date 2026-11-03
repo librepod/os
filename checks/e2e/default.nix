@@ -45,7 +45,6 @@ let
 
     # The device under test shipped at v0.3.5 — the node config models the
     # baseline generation the installer left behind.
-    environment.etc."release-marker".text = "v0.3.5";
     environment.etc."librepod-release".text = "v0.3.5";
 
     # Real bootloader: directBoot VMs have no boot entries, so
@@ -94,7 +93,7 @@ hostPkgs.testers.runNixOSTest {
         return json.loads(pod_e2e.succeed(f"k3s kubectl {shellpath} -o json"))
 
     def marker():
-        return pod_e2e.succeed("cat /etc/release-marker").strip()
+        return pod_e2e.succeed("cat /etc/librepod-release").strip()
 
     def node_label():
         return kubectl_json("get node pod-e2e")["metadata"]["labels"].get("librepod.os/version")
@@ -130,13 +129,14 @@ hostPkgs.testers.runNixOSTest {
         else:
             raise Exception("reboot did not happen within timeout")
         time.sleep(10)  # let the guest settle before reclaiming the shell
-        while True:
+        while time.time() < deadline:
             try:
                 pod_e2e.connected = False
                 pod_e2e.succeed("true")
                 return
             except (BrokenPipeError, ValueError):  # binascii.Error, UnicodeEncodeError are ValueErrors
                 time.sleep(5)
+        raise Exception("shell did not come back within timeout")
 
     def start_and_reboot(cmd):
         # The command reboots the machine out from under the backdoor shell;
@@ -175,7 +175,8 @@ hostPkgs.testers.runNixOSTest {
       "      name = \"pod-e2e\";\n"
       "      version = (builtins.fromJSON (builtins.readFile ./flake.lock)).nodes.librepod.original.ref;\n"
       "      device = ./hw-vm.nix;\n"
-      "      modules = [ ./identity.nix ${instrPath} (librepod + \"/checks/e2e/test-env.nix\") ];\n"
+      "      modules = [ ./identity.nix ${instrPath} (librepod + \"/checks/e2e/test-env.nix\")\n"
+      "        (librepod + \"/checks/e2e/this-release.nix\") ];\n"
       "    };\n"
       "  };\n"
       "}\n"
@@ -233,7 +234,7 @@ hostPkgs.testers.runNixOSTest {
 
     # Broken gen: k3s absent, sentinel counting down (90 s), then rollback.
     pod_e2e.wait_until_succeeds(
-        "test \"$(cat /etc/release-marker)\" = v9.9.9", timeout=300
+        "test \"$(cat /etc/librepod-release)\" = v9.9.9", timeout=300
     )
     pod_e2e.fail("systemctl is-active --quiet k3s")
     pod_e2e.succeed("test -e /var/lib/librepod/update-pending")  # staged while unhealthy

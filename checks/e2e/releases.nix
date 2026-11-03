@@ -1,6 +1,6 @@
 # checks/e2e/releases.nix — host-side release artifacts for the E2E VM.
 # The toplevels are evaluated exactly as the device flake will evaluate them
-# in-VM (mkDevice + hw-vm + stub identity + the tag's marker module), so the
+# in-VM (mkDevice + hw-vm + stub identity + the tag's release module), so the
 # in-VM `nix build` substitutes from the store instead of compiling.
 {
   self,
@@ -17,10 +17,12 @@ let
   enc = builtins.replaceStrings [ "/" "+" "=" ] [ "%2F" "%2B" "%3D" ];
   nixpkgsPath = builtins.getFlake "path:${builtins.unsafeDiscardStringContext (toString self.inputs.nixpkgs)}?narHash=${enc lock.nodes.nixpkgs.locked.narHash}";
 
+  releaseModules = import ./release-modules.nix;
+
   # mkDevice's shape, but on the rev-less nixpkgs (see above). The module
   # list stays shared: applianceModules is verbatim what a device imports.
   mk =
-    version: extraModules:
+    version:
     nixpkgsPath.lib.nixosSystem {
       system = "x86_64-linux";
       specialArgs = {
@@ -30,26 +32,21 @@ let
           disko = self.inputs.disko;
         };
       };
-      modules =
-        self.lib.applianceModules
-        ++ [
-          ./hw-vm.nix
-          { networking.hostName = "pod-e2e"; }
-          {
-            environment.etc."librepod-release".text = version; # mkDevice writes this
-            environment.etc."release-marker".text = version;
-          }
-          { librepod.updates.enable = hostPkgs.lib.mkDefault true; }
-          # Every device generation must speak the test driver's backdoor
-          # protocol (/dev/hvc0 root shell) or machine.succeed dies on the
-          # first reboot into an updated generation.
-          (toString self.inputs.nixpkgs + "/nixos/modules/testing/test-instrumentation.nix")
-          # And keep the test-only service env (git+file pin prefix, fast
-          # sentinel clocks) across generations.
-          ./test-env.nix
-          ../stub-identity.nix
-        ]
-        ++ extraModules;
+      modules = self.lib.applianceModules ++ [
+        ./hw-vm.nix
+        { networking.hostName = "pod-e2e"; }
+        { environment.etc."librepod-release".text = version; } # mkDevice writes this
+        { librepod.updates.enable = hostPkgs.lib.mkDefault true; }
+        # Every device generation must speak the test driver's backdoor
+        # protocol (/dev/hvc0 root shell) or machine.succeed dies on the
+        # first reboot into an updated generation.
+        (toString self.inputs.nixpkgs + "/nixos/modules/testing/test-instrumentation.nix")
+        # And keep the test-only service env (git+file pin prefix, fast
+        # sentinel clocks) across generations.
+        ./test-env.nix
+        ../stub-identity.nix
+        releaseModules.${version} # the device flake imports this-release.nix
+      ];
     };
 in
 rec {
@@ -80,8 +77,11 @@ rec {
 
   repo = hostPkgs.callPackage ./release-repo.nix { inherit self hostPkgs; };
   toplevels = {
-    v0_3_5 = mk "v0.3.5" [ ];
-    v0_4_0 = mk "v0.4.0" [ ];
-    v9_9_9 = mk "v9.9.9" [ { services.k3s.enable = hostPkgs.lib.mkForce false; } ];
+    # Every release except v9.9.1, which must not build.
+    v0_3_5 = mk "v0.3.5";
+    v0_4_0 = mk "v0.4.0";
+    v9_9_2 = mk "v9.9.2";
+    v9_9_3 = mk "v9.9.3";
+    v9_9_9 = mk "v9.9.9";
   };
 }
