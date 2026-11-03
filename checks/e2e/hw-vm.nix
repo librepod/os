@@ -5,6 +5,7 @@
 # device flake evaluates this WITHOUT qemu-vm.nix, so file systems and the
 # bootloader are stated, not inherited from the VM module.
 {
+  config,
   modulesPath,
   ...
 }:
@@ -18,7 +19,7 @@
   # host prebuild evaluates against github-locked inputs; the default
   # system.nixos.version embeds that rev, so the two evals would produce
   # differently-named (unsubstitutable) toplevels. Pin it rev-free.
-  system.nixos.version = "25.11";
+  system.nixos.version = config.system.nixos.release;
 
   # The appliance disables global DHCP — hardware profiles declare their NIC.
   # net.ifnames=0 (test instrumentation) names the virtio NIC eth0.

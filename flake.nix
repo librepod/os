@@ -1,6 +1,6 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
 
     # INFO: Pin k3s to a specific version by using a specific nixpkgs commit
     # To update k3s version, find a nixpkgs commit with the desired k3s version:

@@ -87,13 +87,13 @@ hostPkgs.testers.runNixOSTest {
   extraPythonPackages = ps: [ ];
 
   testScript = ''
-    import binascii, json, time
+    import json, time
 
     def kubectl_json(shellpath):
-        return json.loads(machine.succeed(f"k3s kubectl {shellpath} -o json"))
+        return json.loads(pod_e2e.succeed(f"k3s kubectl {shellpath} -o json"))
 
     def marker():
-        return machine.succeed("cat /etc/release-marker").strip()
+        return pod_e2e.succeed("cat /etc/release-marker").strip()
 
     def node_label():
         return kubectl_json("get node pod-e2e")["metadata"]["labels"].get("librepod.os/version")
@@ -103,7 +103,7 @@ hostPkgs.testers.runNixOSTest {
         return json.loads(cm["data"].get("status.json", "{}"))
 
     def wait_state(state, timeout=300):
-        machine.wait_until_succeeds(
+        pod_e2e.wait_until_succeeds(
             "k3s kubectl -n librepod-os get cm pod-e2e -o json"
             f" | jq -e '.data[\"status.json\"] | fromjson | .state == \"{state}\"'",
             timeout=timeout,
@@ -114,10 +114,10 @@ hostPkgs.testers.runNixOSTest {
         # reboot floods the reconnect with garbage (broken pipes, base64
         # desync, non-ascii) — count kernel-boot lines in the append-only
         # console log instead, then reconnect once, cleanly.
-        boots = machine.get_console_log().count("Linux version")
+        boots = pod_e2e.get_console_log().count("Linux version")
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if machine.get_console_log().count("Linux version") > boots:
+            if pod_e2e.get_console_log().count("Linux version") > boots:
                 break
             time.sleep(5)
         else:
@@ -125,39 +125,39 @@ hostPkgs.testers.runNixOSTest {
         time.sleep(10)  # let the guest settle before reclaiming the shell
         while True:
             try:
-                machine.connected = False
-                machine.succeed("true")
+                pod_e2e.connected = False
+                pod_e2e.succeed("true")
                 return
-            except (BrokenPipeError, binascii.Error, UnicodeEncodeError):
+            except (BrokenPipeError, ValueError):  # binascii.Error, UnicodeEncodeError are ValueErrors
                 time.sleep(5)
 
     def start_and_reboot(cmd):
         # The command reboots the machine out from under the backdoor shell;
         # the pipe breaks mid-execute and the driver must not die on it.
         try:
-            machine.execute(cmd, check_return=False, timeout=300)
-        except (BrokenPipeError, binascii.Error, UnicodeEncodeError):
+            pod_e2e.execute(cmd, check_return=False, timeout=300)
+        except (BrokenPipeError, ValueError):  # binascii.Error, UnicodeEncodeError are ValueErrors
             pass
         wait_reboot_from(None)
 
     # allow_reboot: guest reboots must reset QEMU in-process, not exit it —
     # the updater/sentinel reboot the machine repeatedly.
-    machine.start(allow_reboot=True)
+    pod_e2e.start(allow_reboot=True)
 
     # ---- phase 0: boot, k3s, device flake, substitution gate -------------
-    machine.wait_for_unit("k3s.service", timeout=600)
-    machine.wait_until_succeeds(
+    pod_e2e.wait_for_unit("k3s.service", timeout=600)
+    pod_e2e.wait_until_succeeds(
         "k3s kubectl get node pod-e2e -o json"
         " | jq -e '.status.conditions[] | select(.type==\"Ready\") | .status==\"True\"'",
         timeout=600,
     )
 
     # Device flake exactly as librepod-install would lay it down.
-    machine.succeed("mkdir -p /etc/nixos /srv")
-    machine.succeed("ln -sfn ${releases.repo} /srv/os")
-    machine.succeed("cp ${selfSrc}/checks/e2e/hw-vm.nix /etc/nixos/hw-vm.nix")
-    machine.succeed("cp ${selfSrc}/checks/stub-identity.nix /etc/nixos/identity.nix")
-    machine.succeed("cat > /etc/nixos/flake.nix <<'EOF'\n"
+    pod_e2e.succeed("mkdir -p /etc/nixos /srv")
+    pod_e2e.succeed("ln -sfn ${releases.repo} /srv/os")
+    pod_e2e.succeed("cp ${selfSrc}/checks/e2e/hw-vm.nix /etc/nixos/hw-vm.nix")
+    pod_e2e.succeed("cp ${selfSrc}/checks/stub-identity.nix /etc/nixos/identity.nix")
+    pod_e2e.succeed("cat > /etc/nixos/flake.nix <<'EOF'\n"
       "{\n"
       "  inputs.librepod.url = \"git+file:///srv/os?ref=v0.3.5\";\n"
       "  outputs = { librepod, ... }: {\n"
@@ -169,14 +169,14 @@ hostPkgs.testers.runNixOSTest {
       "  };\n"
       "}\n"
       "EOF")
-    machine.succeed("cd /etc/nixos && nix flake lock")  # resolves only librepod, offline
+    pod_e2e.succeed("cd /etc/nixos && nix flake lock")  # resolves only librepod, offline
 
     # Models what the installer leaves behind: profile → baseline toplevel.
-    machine.succeed("nix-env -p /nix/var/nix/profiles/system --set ${topPath.v0_3_5}")
+    pod_e2e.succeed("nix-env -p /nix/var/nix/profiles/system --set ${topPath.v0_3_5}")
 
     # SUBSTITUTION GATE: in-VM eval must land exactly on the host-prebuilt
     # path. If it builds instead, every later phase times out — fail here.
-    out = machine.succeed(
+    out = pod_e2e.succeed(
         "nix build --no-link --print-out-paths"
         " /etc/nixos#nixosConfigurations.pod-e2e.config.system.build.toplevel"
     ).strip()
@@ -185,8 +185,8 @@ hostPkgs.testers.runNixOSTest {
     assert marker() == "v0.3.5"
 
     # ---- phase 1: first updater run → label stamped, idle ----------------
-    machine.succeed("systemctl start librepod-updater.service")
-    machine.wait_until_succeeds(
+    pod_e2e.succeed("systemctl start librepod-updater.service")
+    pod_e2e.wait_until_succeeds(
         "k3s kubectl get node pod-e2e -o json"
         " | jq -e '.metadata.labels[\"librepod.os/version\"] == \"v0.3.5\"'",
         timeout=120,
@@ -194,15 +194,15 @@ hostPkgs.testers.runNixOSTest {
     assert status()["state"] == "idle"
 
     # ---- phase 2: consent update v0.3.5 → v0.4.0 → commit ----------------
-    machine.succeed(
+    pod_e2e.succeed(
         "k3s kubectl -n librepod-os patch cm pod-e2e --type merge"
         " -p '{\"data\":{\"spec.json\":\"{\\\"desiredVersion\\\":\\\"v0.4.0\\\",\\\"apply\\\":\\\"now\\\"}\"}}'"
     )
     # The updater reboots the machine mid-command; the shell dies with it.
     start_and_reboot("systemctl start librepod-updater.service")
 
-    machine.wait_for_unit("k3s.service", timeout=600)
-    machine.wait_until_succeeds(
+    pod_e2e.wait_for_unit("k3s.service", timeout=600)
+    pod_e2e.wait_until_succeeds(
         "k3s kubectl get node pod-e2e -o json"
         " | jq -e '.status.conditions[] | select(.type==\"Ready\") | .status==\"True\"'",
         timeout=600,
@@ -211,68 +211,68 @@ hostPkgs.testers.runNixOSTest {
 
     assert marker() == "v0.4.0"
     assert node_label() == "v0.4.0"
-    assert "${topPath.v0_4_0}" in machine.succeed("readlink -f /nix/var/nix/profiles/system")
-    machine.succeed("test ! -e /var/lib/librepod/update-pending")
-    machine.succeed("test ! -e /var/lib/librepod/flake.nix.bak")
-    machine.succeed("test ! -e /var/lib/librepod/flake.lock.bak")
-    assert "v0.4.0" in machine.succeed("grep inputs.librepod.url /etc/nixos/flake.nix")
+    assert "${topPath.v0_4_0}" in pod_e2e.succeed("readlink -f /nix/var/nix/profiles/system")
+    pod_e2e.succeed("test ! -e /var/lib/librepod/update-pending")
+    pod_e2e.succeed("test ! -e /var/lib/librepod/flake.nix.bak")
+    pod_e2e.succeed("test ! -e /var/lib/librepod/flake.lock.bak")
+    assert "v0.4.0" in pod_e2e.succeed("grep inputs.librepod.url /etc/nixos/flake.nix")
 
     # ---- phase 3: broken release v9.9.9 → auto-rollback ------------------
-    machine.succeed(
+    pod_e2e.succeed(
         "k3s kubectl -n librepod-os patch cm pod-e2e --type merge"
         " -p '{\"data\":{\"spec.json\":\"{\\\"desiredVersion\\\":\\\"v9.9.9\\\",\\\"apply\\\":\\\"now\\\"}\"}}'"
     )
     start_and_reboot("systemctl start librepod-updater.service")
 
     # Broken gen: k3s absent, sentinel counting down (90 s), then rollback.
-    machine.wait_until_succeeds(
+    pod_e2e.wait_until_succeeds(
         "test \"$(cat /etc/release-marker)\" = v9.9.9", timeout=300
     )
-    machine.fail("systemctl is-active --quiet k3s")
-    machine.succeed("test -e /var/lib/librepod/update-pending")  # staged while unhealthy
+    pod_e2e.fail("systemctl is-active --quiet k3s")
+    pod_e2e.succeed("test -e /var/lib/librepod/update-pending")  # staged while unhealthy
     wait_reboot_from(timeout=600)  # sentinel rollback reboot
 
-    machine.wait_for_unit("k3s.service", timeout=600)
+    pod_e2e.wait_for_unit("k3s.service", timeout=600)
 
     # FIRST post-rollback action: withdraw consent before the 2-min updater
     # timer re-applies v9.9.9 (OnBootSec race — see plan constraints).
-    machine.succeed(
+    pod_e2e.succeed(
         "k3s kubectl -n librepod-os patch cm pod-e2e --type merge"
         " -p '{\"data\":{\"spec.json\":null}}'"
     )
 
-    machine.wait_until_succeeds(
+    pod_e2e.wait_until_succeeds(
         "k3s kubectl get node pod-e2e -o json"
         " | jq -e '.status.conditions[] | select(.type==\"Ready\") | .status==\"True\"'",
         timeout=600,
     )
 
     assert marker() == "v0.4.0"  # previous generation restored
-    assert "${topPath.v0_4_0}" in machine.succeed(
+    assert "${topPath.v0_4_0}" in pod_e2e.succeed(
         "readlink -f /nix/var/nix/profiles/system"
     )
-    assert "v0.4.0" in machine.succeed("grep inputs.librepod.url /etc/nixos/flake.nix")
-    machine.succeed(
+    assert "v0.4.0" in pod_e2e.succeed("grep inputs.librepod.url /etc/nixos/flake.nix")
+    pod_e2e.succeed(
         "jq -e '.nodes.librepod.original.ref == \"v0.4.0\"' /etc/nixos/flake.lock"
     )
     wait_state("rolled_back", timeout=300)
-    machine.succeed("test ! -e /var/lib/librepod/update-pending")
+    pod_e2e.succeed("test ! -e /var/lib/librepod/update-pending")
 
     # ---- phase 4: stale flag (power loss mid-flow) → clear, no reboot ----
-    from_before = machine.succeed("readlink -f /nix/var/nix/profiles/system").strip()
-    machine.succeed(
+    from_before = pod_e2e.succeed("readlink -f /nix/var/nix/profiles/system").strip()
+    pod_e2e.succeed(
         f"jq -nc --arg from '{from_before}' --arg to v0.3.5"
         " '{from:$from,to:$to}' > /var/lib/librepod/update-pending"
     )
-    machine.succeed("systemctl start librepod-update-sentinel.service")
-    machine.succeed("test ! -e /var/lib/librepod/update-pending")
+    pod_e2e.succeed("systemctl start librepod-update-sentinel.service")
+    pod_e2e.succeed("test ! -e /var/lib/librepod/update-pending")
     assert marker() == "v0.4.0"  # still the same generation
     assert (
-        machine.succeed("readlink -f /nix/var/nix/profiles/system").strip()
+        pod_e2e.succeed("readlink -f /nix/var/nix/profiles/system").strip()
         == from_before
     )
     # machine never rebooted — uptime not reset:
-    assert int(machine.succeed("cat /proc/uptime").split(".")[0]) > 30
+    assert int(pod_e2e.succeed("cat /proc/uptime").split(".")[0]) > 30
 
     print("updates-e2e: all scenarios passed")
   '';

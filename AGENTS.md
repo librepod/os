@@ -44,7 +44,7 @@ Device profiles in `devices/` aggregate modules via `imports`. Each device provi
 
 ## Nix Style
 
-- Uses `nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11"` (release channel, not unstable).
+- Uses `nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05"` (release channel, not unstable).
 - All packages use `allowUnfree = false`.
 - Scripts use `pkgs.writeShellApplication` with explicit `runtimeInputs` rather than `buildInputs` or ad-hoc PATH manipulation.
 - `lib.mkDefault` is used for values that consumers should override (e.g., disk device in disko, hostname in networking).
