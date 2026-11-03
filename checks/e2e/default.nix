@@ -176,10 +176,12 @@ hostPkgs.testers.runNixOSTest {
         pod_e2e.succeed("systemctl unset-environment SYSTEMCTL")
 
     def boot_entry(eid=None):
-        # The default entry, or the one with this id, as JSON text.
+        # The default entry, or the one with this id, as JSON text. Default is
+        # loader.conf's: bootctl's isDefault follows a pending one-shot.
+        eid = eid or pod_e2e.succeed("sed -n 's/^default //p' /boot/loader/loader.conf").strip()
         entries = json.loads(pod_e2e.succeed("bootctl list --json=short"))
-        hits = [e for e in entries if (e["id"] == eid if eid else e.get("isDefault"))]
-        assert len(hits) == 1, entries
+        hits = [e for e in entries if e["id"] == eid]
+        assert len(hits) == 1, (eid, entries)
         return json.dumps(hits[0])
 
     def oneshot_entry():
