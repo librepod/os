@@ -46,6 +46,7 @@ let
     # The device under test shipped at v0.3.5 — the node config models the
     # baseline generation the installer left behind.
     environment.etc."release-marker".text = "v0.3.5";
+    environment.etc."librepod-release".text = "v0.3.5";
 
     # Real bootloader: directBoot VMs have no boot entries, so
     # switch-to-configuration boot + reboot would be a silent no-op.
@@ -166,6 +167,7 @@ hostPkgs.testers.runNixOSTest {
       "  outputs = { librepod, ... }: {\n"
       "    nixosConfigurations.pod-e2e = librepod.lib.mkDevice {\n"
       "      name = \"pod-e2e\";\n"
+      "      version = (builtins.fromJSON (builtins.readFile ./flake.lock)).nodes.librepod.original.ref;\n"
       "      device = ./hw-vm.nix;\n"
       "      modules = [ ./identity.nix ${instrPath} (librepod + \"/checks/e2e/test-env.nix\") ];\n"
       "    };\n"
@@ -195,6 +197,7 @@ hostPkgs.testers.runNixOSTest {
         timeout=120,
     )
     assert status()["state"] == "idle"
+    assert status()["currentVersion"] == "v0.3.5"  # from the booted system
 
     # ---- phase 2: consent update v0.3.5 → v0.4.0 → commit ----------------
     pod_e2e.succeed(
@@ -211,6 +214,7 @@ hostPkgs.testers.runNixOSTest {
         timeout=600,
     )
     wait_state("done", timeout=300)
+    assert status()["currentVersion"] == "v0.4.0"
 
     assert marker() == "v0.4.0"
     assert node_label() == "v0.4.0"
@@ -259,6 +263,7 @@ hostPkgs.testers.runNixOSTest {
         "jq -e '.nodes.librepod.original.ref == \"v0.4.0\"' /etc/nixos/flake.lock"
     )
     wait_state("rolled_back", timeout=300)
+    assert status()["currentVersion"] == "v0.4.0"  # booted, not v9.9.9
     pod_e2e.succeed("test ! -e /var/lib/librepod/update-pending")
 
     # ---- phase 4: stale flag (power loss mid-flow) → clear, no reboot ----

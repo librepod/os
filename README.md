@@ -81,6 +81,8 @@ plus per-device identity — used by the small flake an installed device owns at
   outputs = { librepod, ... }: {
     nixosConfigurations.pod-abc123 = librepod.lib.mkDevice {
       name = "pod-abc123";
+      # the tag above, from the lock; the updater reports it as the running version
+      version = (builtins.fromJSON (builtins.readFile ./flake.lock)).nodes.librepod.original.ref;
       device = "lenovo-m710q";          # ./hw/<name>
       modules = [ ./identity.nix ];     # users, keys, frpc — never hardware
     };

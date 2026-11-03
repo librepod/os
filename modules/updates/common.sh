@@ -13,16 +13,18 @@ KUBECTL="${KUBECTL:-k3s kubectl}"
 NIX_ENV_BIN="${NIX_ENV_BIN:-nix-env}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 PROFILE="${LIBREPOD_PROFILE:-/nix/var/nix/profiles/system}"
+RELEASE_FILE="${LIBREPOD_RELEASE_FILE:-/run/current-system/etc/librepod-release}"
 
 # shellcheck disable=SC2086  # KUBECTL may be multiple words ("k3s kubectl")
 kctl() { $KUBECTL "$@"; }
 
-# flake.lock is the single source of truth for the running version.
+# The booted system's tag (mkDevice writes it), never flake.lock: the lock
+# can name a version that failed to build or was rolled back.
 current_version() {
-  jq -r '.nodes.librepod.original.ref // "unknown"' "$FLAKE_DIR/flake.lock" 2>/dev/null || echo "unknown"
+  cat "$RELEASE_FILE" 2>/dev/null || echo "unknown"
 }
 
-report() { # state, detail — best-effort telemetry; cv always from the lock
+report() { # state, detail — best-effort telemetry; cv from the booted system
   local now; now="$(date -u +%FT%TZ)"
   local json
   json=$(jq -n \

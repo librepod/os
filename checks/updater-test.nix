@@ -79,15 +79,17 @@ pkgs.runCommand "updater-test"
 
     export PATH="$STUBS/bin:$PATH"
 
-    # flake.lock with the current version (source of truth for report/label)
-    lock() { echo "{\"nodes\":{\"librepod\":{\"original\":{\"ref\":\"$1\"}}}}" > "$FLAKE/flake.lock"; }
+    # The booted system's release tag (the current version for report/label)
+    booted() { echo "$1" > "$STUBS/release"; }
+    export LIBREPOD_RELEASE_FILE="$STUBS/release"
     pin() { printf 'inputs.librepod.url = "github:librepod/os/%s";\n' "$1" > "$FLAKE/flake.nix"; }
 
     # ---- scenario 1: gate rejects non-tag ref + first-boot label stamp ------
     export SPEC_FILE="$STUBS/spec-master.json"
     echo '{"desiredVersion":"master","apply":"now"}' > "$SPEC_FILE"
     pin v0.3.5
-    lock v0.3.5
+    booted v0.3.5
+    echo '{}' > "$FLAKE/flake.lock"   # backup_pin copies it
     export LIBREPOD_FLAKE_DIR="$FLAKE" LIBREPOD_STATE_DIR="$STATE" \
            LIBREPOD_NODE_NAME="pod-test"
 
@@ -136,7 +138,7 @@ pkgs.runCommand "updater-test"
     export SPEC_FILE="$STUBS/spec-down.json"
     echo '{"desiredVersion":"v0.1.0"}' > "$SPEC_FILE"   # no apply:now → window path
     pin v0.3.5
-    lock v0.3.5
+    booted v0.3.5
     rm -f "$STATE/update-pending"
 
     bash "$UPDATER"
@@ -153,7 +155,7 @@ pkgs.runCommand "updater-test"
       || { echo "FAIL: update applied outside the window"; exit 1; }
 
     pin v0.3.5
-    lock v0.3.5
+    booted v0.3.5
     rm -f "$STATE/update-pending"
     FAKE_HOUR=23 bash "$UPDATER"
     grep -q 'github:librepod/os/v9.9.9' "$FLAKE/flake.nix" \
@@ -179,7 +181,7 @@ pkgs.runCommand "updater-test"
     export SPEC_FILE="$STUBS/spec-hn.json"
     echo '{}' > "$SPEC_FILE"   # no desiredVersion → idle, label reconcile still runs
     pin v0.3.5
-    lock v0.3.5
+    booted v0.3.5
     rm -f "$STATE/update-pending"
     unset LIBREPOD_NODE_NAME
     HN="$(cat /proc/sys/kernel/hostname)"
@@ -195,6 +197,22 @@ pkgs.runCommand "updater-test"
     bash "$UPDATER"
     [ ! -s "$LOG" ] \
       || { echo "FAIL: poll touched the cluster while an update was in flight"; exit 1; }
+    rm -f "$STATE/update-pending"
+
+    # ---- scenario 8: the booted version wins over flake.lock -----------------
+    # After a failed update the lock can name the new tag while the old one runs.
+    : > "$LOG"
+    export SPEC_FILE="$STUBS/spec-v9.json"
+    pin v0.3.5
+    booted v0.3.5
+    echo '{"nodes":{"librepod":{"original":{"ref":"v9.9.9"}}}}' > "$FLAKE/flake.lock"
+    bash "$UPDATER"
+    grep -q "label node pod-test librepod.os/version=v0.3.5" "$LOG" \
+      || { echo "FAIL: label not from the booted system"; exit 1; }
+    grep -qF 'currentVersion\": \"v0.3.5' "$LOG" \
+      || { echo "FAIL: status currentVersion not from the booted system"; exit 1; }
+    grep -q "systemctl reboot" "$LOG" \
+      || { echo "FAIL: a lock naming v9.9.9 masked the update as up to date"; exit 1; }
     rm -f "$STATE/update-pending"
 
     echo "updater scenarios passed"

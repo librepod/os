@@ -62,6 +62,9 @@ pkgs.runCommand "installer-test"
       || { echo "FAIL: pin line missing/wrong"; exit 1; }
     grep -q 'name = "pod-test"' "$ROOT/mnt/etc/nixos/flake.nix" \
       || { echo "FAIL: device name missing"; exit 1; }
+    grep -qF 'version = (builtins.fromJSON (builtins.readFile ./flake.lock)).nodes.librepod.original.ref;' \
+      "$ROOT/mnt/etc/nixos/flake.nix" \
+      || { echo "FAIL: version not taken from the lock"; exit 1; }
     grep -q 'device = "lenovo-m710q"' "$ROOT/mnt/etc/nixos/flake.nix" \
       || { echo "FAIL: hw profile missing"; exit 1; }
     grep -q './identity.nix' "$ROOT/mnt/etc/nixos/flake.nix" \

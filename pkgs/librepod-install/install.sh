@@ -56,6 +56,7 @@ cat > "$WORKDIR/flake.nix" <<EOF
   outputs = { librepod, ... }: {
     nixosConfigurations.${NAME} = librepod.lib.mkDevice {
       name = "${NAME}";
+      version = (builtins.fromJSON (builtins.readFile ./flake.lock)).nodes.librepod.original.ref;
       device = ${DEVICE_REF};
       modules = [ ./identity.nix ];
     };

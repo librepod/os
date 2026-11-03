@@ -114,12 +114,15 @@
         # per-device identity modules. Used by the generated device flake
         # (see docs/superpowers/specs/2026-10-10-device-layer-os-updates-design.md).
         #   name    — hostname; becomes the nixosConfigurations attr name
+        #   version — the release tag; the device flake passes its lock's
+        #             nodes.librepod.original.ref
         #   device  — supported profile name under ./hw (string), or any
         #             hardware module path (unsupported/personal devices)
         #   modules — identity modules (users, frpc, per-device bits)
         mkDevice =
           {
             name,
+            version,
             device,
             modules ? [ ],
           }:
@@ -137,6 +140,9 @@
                 # Supported profile by name, or a consumer-supplied module path
                 (if builtins.isString device then (./hw + "/${device}") else device)
                 { networking.hostName = name; }
+                # The updater reports this, not flake.lock: the two disagree
+                # after a failed or rolled-back update.
+                { environment.etc."librepod-release".text = version; }
                 # Appliances are updateable; identity can override (mkDefault).
                 { librepod.updates.enable = nixpkgs.lib.mkDefault true; }
               ]
@@ -208,6 +214,7 @@
                 self.lib.mkDevice {
                   inherit device;
                   name = "pod-test";
+                  version = "v0.0.0";
                   modules = [ ./checks/stub-identity.nix ];
                 };
             in

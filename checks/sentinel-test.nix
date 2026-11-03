@@ -22,8 +22,8 @@ pkgs.runCommand "sentinel-test"
     # the profile link target is relative to that dir (system → system-N-link).
     mkdir -p "$ROOT/bin" "$ROOT/state" "$ROOT/profiles/new" "$ROOT/profiles/prev/bin" "$ROOT/flake"
     touch "$ROOT/profiles/new/nixos-version" "$ROOT/profiles/prev/nixos-version"
-    # flake.lock the shared report/current_version read
-    echo '{"nodes":{"librepod":{"original":{"ref":"v9.9.9"}}}}' > "$ROOT/flake/flake.lock"
+    # the booted release the shared report/current_version read
+    echo v9.9.9 > "$ROOT/release"
 
     cat > "$ROOT/bin/k3s" <<'EOF'
     #!/bin/sh
@@ -62,6 +62,7 @@ pkgs.runCommand "sentinel-test"
     export LIBREPOD_STATE_DIR="$ROOT/state" \
            LIBREPOD_NODE_NAME="pod-test" \
            LIBREPOD_FLAKE_DIR="$ROOT/flake" \
+           LIBREPOD_RELEASE_FILE="$ROOT/release" \
            LIBREPOD_HEALTH_TIMEOUT=0 LIBREPOD_HEALTH_STABLE=0 LIBREPOD_POLL_INTERVAL=0 \
            LIBREPOD_PROFILE="$ROOT/profiles/system"
 

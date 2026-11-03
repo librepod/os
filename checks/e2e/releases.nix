@@ -20,7 +20,7 @@ let
   # mkDevice's shape, but on the rev-less nixpkgs (see above). The module
   # list stays shared: applianceModules is verbatim what a device imports.
   mk =
-    extraModules:
+    version: extraModules:
     nixpkgsPath.lib.nixosSystem {
       system = "x86_64-linux";
       specialArgs = {
@@ -35,6 +35,10 @@ let
         ++ [
           ./hw-vm.nix
           { networking.hostName = "pod-e2e"; }
+          {
+            environment.etc."librepod-release".text = version; # mkDevice writes this
+            environment.etc."release-marker".text = version;
+          }
           { librepod.updates.enable = hostPkgs.lib.mkDefault true; }
           # Every device generation must speak the test driver's backdoor
           # protocol (/dev/hvc0 root shell) or machine.succeed dies on the
@@ -76,13 +80,8 @@ rec {
 
   repo = hostPkgs.callPackage ./release-repo.nix { inherit self hostPkgs; };
   toplevels = {
-    v0_3_5 = mk [ { environment.etc."release-marker".text = "v0.3.5"; } ];
-    v0_4_0 = mk [ { environment.etc."release-marker".text = "v0.4.0"; } ];
-    v9_9_9 = mk [
-      {
-        environment.etc."release-marker".text = "v9.9.9";
-        services.k3s.enable = hostPkgs.lib.mkForce false;
-      }
-    ];
+    v0_3_5 = mk "v0.3.5" [ ];
+    v0_4_0 = mk "v0.4.0" [ ];
+    v9_9_9 = mk "v9.9.9" [ { services.k3s.enable = hostPkgs.lib.mkForce false; } ];
   };
 }
