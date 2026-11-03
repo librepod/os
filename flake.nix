@@ -154,7 +154,7 @@
         nixpkgs.legacyPackages.x86_64-linux.callPackage ./pkgs/librepod-install
           { };
 
-      # Local-only E2E (KVM): nix build .#updates-e2e — deliberately NOT in checks.*
+      # E2E (KVM): nix build .#updates-e2e — NOT in checks.*; release-stable.yml gates releases on it
       updates-e2e = nixpkgs.legacyPackages.x86_64-linux.callPackage ./checks/e2e {
         inherit self nixpkgs;
       };
