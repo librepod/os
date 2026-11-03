@@ -332,12 +332,12 @@ hostPkgs.testers.runNixOSTest {
     assert int(pod_e2e.succeed("cat /proc/uptime").split(".")[0]) > 30
 
     # ---- phase 5: power cut mid-commit → the next boot finishes it -------
-    request(3, "v0.3.5")
+    request(3, "v0.5.0")
     stage_only()
     # The state a cut leaves after the commit's profile switch: the one-shot
     # used up, the profile on NEW, the boot entries still defaulting to OLD.
     pod_e2e.succeed("bootctl set-oneshot \"\"")
-    pod_e2e.succeed("nix-env -p /nix/var/nix/profiles/system --set ${topPath.v0_3_5}")
+    pod_e2e.succeed("nix-env -p /nix/var/nix/profiles/system --set ${topPath.v0_5_0}")
     pod_e2e.succeed(
         "cd /var/lib/librepod && jq -c '.phase = \"committing\"' update-pending > p.new"
         " && mv p.new update-pending"
@@ -348,17 +348,17 @@ hostPkgs.testers.runNixOSTest {
     wait_reboot_from(boots=1, timeout=900)
     wait_healthy()
     wait_state("done", timeout=300)
-    assert marker() == "v0.3.5"
+    assert marker() == "v0.5.0"
     assert status()["observedRequestId"] == 3
-    assert "${topPath.v0_3_5}" in boot_entry()
-    pod_e2e.succeed("jq -e '.nodes.librepod.original.ref == \"v0.3.5\"' /etc/nixos/flake.lock")
+    assert "${topPath.v0_5_0}" in boot_entry()
+    pod_e2e.succeed("jq -e '.nodes.librepod.original.ref == \"v0.5.0\"' /etc/nixos/flake.lock")
     pod_e2e.succeed("test ! -e /var/lib/librepod/update-pending")
 
     # ---- phase 6: a release that does not build → failed, no reboot ------
     request(4, "v9.9.1")
     pod_e2e.fail("systemctl start librepod-updater.service")  # the build fails
     wait_state("failed", timeout=300)
-    assert marker() == "v0.3.5"
+    assert marker() == "v0.5.0"
     pod_e2e.succeed("test ! -e /var/lib/librepod/update-pending")
 
     # Each bad release below must land back on OLD with no help.
@@ -366,7 +366,7 @@ hostPkgs.testers.runNixOSTest {
     request(5, "v9.9.2")
     start_and_reboot("systemctl start librepod-updater.service", reboots=2)
     assert "Kernel panic" in pod_e2e.get_console_log()
-    ended_on_old("v9.9.2", "v0.3.5")
+    ended_on_old("v9.9.2", "v0.5.0")
 
     # ---- phase 8: stage 1 hangs → only a power cut gets out --------------
     request(6, "v9.9.3")
@@ -383,14 +383,14 @@ hostPkgs.testers.runNixOSTest {
     pod_e2e.crash()
     pod_e2e.start(allow_reboot=True)  # restarts the console log
     wait_reboot_from(boots=0)
-    ended_on_old("v9.9.3", "v0.3.5")
+    ended_on_old("v9.9.3", "v0.5.0")
 
     # ---- phase 9: runs, but cannot fetch updates → never committed -------
     request(7, "v9.9.4")
     start_and_reboot("systemctl start librepod-updater.service")
     assert marker() == "v9.9.4"
     wait_reboot_from(timeout=600)  # the sentinel ends the trial at its deadline
-    ended_on_old("v9.9.4", "v0.3.5")
+    ended_on_old("v9.9.4", "v0.5.0")
 
     print("updates-e2e: all scenarios passed")
   '';

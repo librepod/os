@@ -157,10 +157,10 @@ pkgs.runCommand "updater-test"
        and .version == "v9.9.9" and .requestId == 2' "$STATE/update-pending" >/dev/null \
       || { echo "FAIL: update-pending wrong: $(cat "$STATE/update-pending")"; exit 1; }
 
-    # ---- scenario 3: unattended path ignores downgrade ----------------------
+    # ---- scenario 3: the owner's downgrade request is refused ---------------
     : > "$LOG"
     export SPEC_FILE="$STUBS/spec-down.json"
-    echo '{"requestId":3,"desiredVersion":"v0.1.0"}' > "$SPEC_FILE"   # no apply:now → window path
+    echo '{"requestId":3,"desiredVersion":"v0.1.0","apply":"now"}' > "$SPEC_FILE"
     pin v0.3.5
     booted v0.3.5
     rm -f "$STATE/update-pending"
@@ -168,7 +168,11 @@ pkgs.runCommand "updater-test"
     bash "$UPDATER"
 
     ! grep -q "systemctl reboot" "$LOG" \
-      || { echo "FAIL: unattended downgrade was applied"; exit 1; }
+      || { echo "FAIL: a manual downgrade was applied"; exit 1; }
+    grep -qF 'state\": \"rejected' "$LOG" && grep -q "only upgrades" "$LOG" \
+      || { echo "FAIL: the downgrade was not reported as rejected"; exit 1; }
+    [ "$(cat "$STATE/request-id")" = 3 ] \
+      || { echo "FAIL: request 3 not recorded as handled"; exit 1; }
 
     # ---- scenario 4: window crossing midnight -------------------------------
     export SPEC_FILE="$STUBS/spec-win.json"
@@ -319,6 +323,22 @@ pkgs.runCommand "updater-test"
       || { echo "FAIL: update-pending left behind; the updater would stand down for good"; exit 1; }
     grep -qF 'state\": \"failed' "$LOG" \
       || { echo "FAIL: the failed trial setup was not reported"; exit 1; }
+
+    # ---- scenario 15: unattended downgrade refused; same version a no-op ----
+    : > "$LOG"
+    pin v0.3.5
+    booted v0.3.5
+    echo '{"requestId":13,"desiredVersion":"v0.1.0","policy":{"unattended":true,"window":"22:00-06:00"}}' > "$SPEC_FILE"
+    FAKE_HOUR=23 bash "$UPDATER"
+    ! grep -q "systemctl reboot" "$LOG" \
+      || { echo "FAIL: an unattended downgrade was applied"; exit 1; }
+    grep -qF 'state\": \"rejected' "$LOG" && grep -q "only upgrades" "$LOG" \
+      || { echo "FAIL: the unattended downgrade was not reported as rejected"; exit 1; }
+    : > "$LOG"
+    echo '{"requestId":14,"desiredVersion":"v0.3.5","apply":"now"}' > "$SPEC_FILE"
+    bash "$UPDATER"
+    ! grep -q "systemctl reboot\|nix-env" "$LOG" && grep -q "already on v0.3.5" "$LOG" \
+      || { echo "FAIL: a request for the booted version did more than report done"; exit 1; }
 
     echo "updater scenarios passed"
     touch $out

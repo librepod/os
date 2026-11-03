@@ -64,11 +64,16 @@ fi
 if [ "$DESIRED" = "$CURRENT" ]; then
   finish "done" "already on $DESIRED"
 fi
+# Upgrades only, also when the owner asks: an older release can pin an older
+# k3s, which upstream does not support on a datastore a newer one wrote.
+if [ "$CURRENT" != "unknown" ] \
+   && ! [ "$(printf '%s\n%s\n' "$CURRENT" "$DESIRED" | sort -V | tail -1)" = "$DESIRED" ]; then
+  finish rejected "$DESIRED is older than $CURRENT; only upgrades are allowed"
+fi
 
-if [ "$APPLY" = "now" ]; then
-  : # the owner asked: any existing tag, downgrades and failed versions too (UI warns)
-else
-  # unattended: policy must opt in, now within window, upgrades only
+if [ "$APPLY" != "now" ]; then
+  # unattended: policy must opt in, now within window, no failed versions
+  # (the owner's own request may retry one)
   in_window() {
     [ -n "$WINDOW" ] || return 1
     local h; h="$(date +%H)"
@@ -83,10 +88,6 @@ else
   }
   if [ "$UNATTENDED" != "true" ] || ! in_window; then
     exit 0   # not handled yet: waits for consent or the window
-  fi
-  if [ "$CURRENT" != "unknown" ] \
-     && ! [ "$(printf '%s\n%s\n' "$CURRENT" "$DESIRED" | sort -V | tail -1)" = "$DESIRED" ]; then
-    finish rejected "unattended downgrade to $DESIRED"
   fi
   if grep -qxF "$DESIRED" "$STATE_DIR/failed-versions" 2>/dev/null; then
     finish rejected "$DESIRED failed its trial on this device; the owner can ask again"

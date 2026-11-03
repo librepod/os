@@ -80,6 +80,7 @@ rec {
     # Every release except v9.9.1, which must not build.
     v0_3_5 = mk "v0.3.5";
     v0_4_0 = mk "v0.4.0";
+    v0_5_0 = mk "v0.5.0";
     v9_9_2 = mk "v9.9.2";
     v9_9_3 = mk "v9.9.3";
     v9_9_4 = mk "v9.9.4";

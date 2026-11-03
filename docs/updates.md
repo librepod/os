@@ -17,12 +17,15 @@ trial failed. Deleting or re-creating the ConfigMap never starts an update.
   for example on each click on Update. The device acts on each `requestId`
   once, and ignores any `requestId` at or below the last one it handled.
 - `desiredVersion`: a release tag, `vX.Y.Z`.
-- `apply: "now"`: the owner asked. The device applies any tag at once,
-  including a downgrade or a version that failed before.
+- Only upgrades: a tag older than the booted version is rejected, also on the
+  owner's request. An older release can pin an older k3s, and k3s does not
+  support starting on a datastore that a newer version wrote.
+- `apply: "now"`: the owner asked. The device applies the tag at once, also
+  a version that failed before.
 - Without `apply: "now"` the update is unattended and needs
   `"policy": { "unattended": true, "window": "22:00-06:00" }` (device clock;
-  the window may cross midnight). The device waits for the window, takes
-  upgrades only, and never retries a version whose trial failed on it.
+  the window may cross midnight). The device waits for the window and never
+  retries a version whose trial failed on it.
 
 ## `status.json` (device → Marketplace)
 

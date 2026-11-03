@@ -5,6 +5,7 @@
 {
   "v0.3.5" = { };
   "v0.4.0" = { };
+  "v0.5.0" = { };
 
   # Bad releases: each must fall back to the old one with no help.
   # Does not build.
