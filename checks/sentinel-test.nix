@@ -5,6 +5,7 @@ pkgs.runCommand "sentinel-test"
     buildInputs = with pkgs; [
       bash
       jq
+      shellcheck
     ];
   }
   ''
@@ -17,6 +18,7 @@ pkgs.runCommand "sentinel-test"
     # Same concatenation modules/updates/default.nix ships.
     SENTINEL="$ROOT/sentinel"
     cat "${../modules/updates/common.sh}" "${../modules/updates/sentinel.sh}" > "$SENTINEL"
+    shellcheck "$SENTINEL"   # writeShellApplication runs it at build time too
 
     # Real Nix profile layout: generation dirs live in the profile dir, and
     # the profile link target is relative to that dir (system → system-N-link).
@@ -72,7 +74,10 @@ pkgs.runCommand "sentinel-test"
     echo "{\"from\":\"$ROOT/profiles/prev\",\"to\":\"v9.9.9\"}" > "$ROOT/state/update-pending"
     echo old-pin > "$ROOT/state/flake.nix.bak"
     echo old-lock > "$ROOT/state/flake.lock.bak"
+    echo 7 > "$ROOT/state/request-id"   # the updater recorded the request
     bash "$SENTINEL"
+    grep -qF 'observedRequestId\": 7' "$CALLS_LOG" \
+      || { echo "FAIL: status does not name the handled request"; exit 1; }
     grep -q "label node pod-test librepod.os/version=v9.9.9" "$CALLS_LOG" \
       || { echo "FAIL: success label missing"; exit 1; }
     test ! -e "$ROOT/state/update-pending" \
@@ -105,6 +110,8 @@ pkgs.runCommand "sentinel-test"
       || { echo "FAIL: flag not cleared on rollback"; exit 1; }
     [ "$(cat "$ROOT/flake/flake.lock")" = "old-lock" ] \
       || { echo "FAIL: rollback left the lock claiming the failed version"; exit 1; }
+    grep -qx v9.9.9 "$ROOT/state/failed-versions" \
+      || { echo "FAIL: rolled-back version not recorded as failed"; exit 1; }
 
     # ---- scenario 3: stale flag (power loss mid-flow) → clear, no rollback ----
     : > "$CALLS_LOG"

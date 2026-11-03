@@ -28,8 +28,10 @@ report() { # state, detail — best-effort telemetry; cv from the booted system
   local now; now="$(date -u +%FT%TZ)"
   local json
   json=$(jq -n \
+    --arg rid "$(cat "$STATE_DIR/request-id" 2>/dev/null || true)" \
     --arg cv "$(current_version)" --arg st "$1" --arg ts "$now" --arg d "$2" \
-    '{currentVersion:$cv, state:$st, lastTransition:$ts, detail:$d}')
+    '{observedRequestId:($rid | tonumber? // null), currentVersion:$cv,
+      state:$st, lastTransition:$ts, detail:$d}')
   kctl -n "$NS" patch configmap "$NODE_NAME" --type merge \
     -p "$(jq -n --arg s "$json" '{data:{"status.json":$s}}')" >/dev/null 2>&1 || true
   echo "[librepod][$1] $2"

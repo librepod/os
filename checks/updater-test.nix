@@ -7,6 +7,7 @@ pkgs.runCommand "updater-test"
     buildInputs = with pkgs; [
       bash
       jq
+      shellcheck
     ];
   }
   ''
@@ -20,6 +21,7 @@ pkgs.runCommand "updater-test"
     # Same concatenation modules/updates/default.nix ships.
     UPDATER="$STUBS/updater"
     cat "${../modules/updates/common.sh}" "${../modules/updates/updater.sh}" > "$UPDATER"
+    shellcheck "$UPDATER"   # writeShellApplication runs it at build time too
 
     # ---- stubs -------------------------------------------------------------
     mkdir -p "$STUBS/bin" "$STUBS/fake-out/bin" "$FLAKE" "$STATE"
@@ -86,7 +88,7 @@ pkgs.runCommand "updater-test"
 
     # ---- scenario 1: gate rejects non-tag ref + first-boot label stamp ------
     export SPEC_FILE="$STUBS/spec-master.json"
-    echo '{"desiredVersion":"master","apply":"now"}' > "$SPEC_FILE"
+    echo '{"requestId":1,"desiredVersion":"master","apply":"now"}' > "$SPEC_FILE"
     pin v0.3.5
     booted v0.3.5
     echo '{}' > "$FLAKE/flake.lock"   # backup_pin copies it
@@ -105,7 +107,7 @@ pkgs.runCommand "updater-test"
     # ---- scenario 2: manual consent applies a valid tag ---------------------
     : > "$LOG"
     export SPEC_FILE="$STUBS/spec-v9.json"
-    echo '{"desiredVersion":"v9.9.9","apply":"now"}' > "$SPEC_FILE"
+    echo '{"requestId":2,"desiredVersion":"v9.9.9","apply":"now"}' > "$SPEC_FILE"
 
     bash "$UPDATER"
 
@@ -136,7 +138,7 @@ pkgs.runCommand "updater-test"
     # ---- scenario 3: unattended path ignores downgrade ----------------------
     : > "$LOG"
     export SPEC_FILE="$STUBS/spec-down.json"
-    echo '{"desiredVersion":"v0.1.0"}' > "$SPEC_FILE"   # no apply:now → window path
+    echo '{"requestId":3,"desiredVersion":"v0.1.0"}' > "$SPEC_FILE"   # no apply:now → window path
     pin v0.3.5
     booted v0.3.5
     rm -f "$STATE/update-pending"
@@ -148,7 +150,7 @@ pkgs.runCommand "updater-test"
 
     # ---- scenario 4: window crossing midnight -------------------------------
     export SPEC_FILE="$STUBS/spec-win.json"
-    echo '{"desiredVersion":"v9.9.9","policy":{"unattended":true,"window":"22:00-06:00"}}' > "$SPEC_FILE"
+    echo '{"requestId":4,"desiredVersion":"v9.9.9","policy":{"unattended":true,"window":"22:00-06:00"}}' > "$SPEC_FILE"
 
     FAKE_HOUR=12 bash "$UPDATER"
     grep -q 'v0.3.5' "$FLAKE/flake.nix" \
@@ -157,14 +159,14 @@ pkgs.runCommand "updater-test"
     pin v0.3.5
     booted v0.3.5
     rm -f "$STATE/update-pending"
-    FAKE_HOUR=23 bash "$UPDATER"
+    FAKE_HOUR=23 bash "$UPDATER"   # same request 4: waiting did not use it up
     grep -q 'github:librepod/os/v9.9.9' "$FLAKE/flake.nix" \
       || { echo "FAIL: update not applied inside a midnight-wrapping window"; exit 1; }
 
     # ---- scenario 5: custom URI prefix (E2E uses git+file) ------------------
     : > "$LOG"
     export SPEC_FILE="$STUBS/spec-prefix.json"
-    echo '{"desiredVersion":"v9.9.9","apply":"now"}' > "$SPEC_FILE"
+    echo '{"requestId":5,"desiredVersion":"v9.9.9","apply":"now"}' > "$SPEC_FILE"
     export LIBREPOD_URI_PREFIX="git+file:///srv/os?ref="
     printf 'inputs.librepod.url = "git+file:///srv/os?ref=v0.3.5";\n' > "$FLAKE/flake.nix"
     rm -f "$STATE/update-pending"
@@ -179,7 +181,7 @@ pkgs.runCommand "updater-test"
     # (E2E found this: the service PATH has no `hostname` binary.)
     : > "$LOG"
     export SPEC_FILE="$STUBS/spec-hn.json"
-    echo '{}' > "$SPEC_FILE"   # no desiredVersion → idle, label reconcile still runs
+    echo '{}' > "$SPEC_FILE"   # no request → silent, label reconcile still runs
     pin v0.3.5
     booted v0.3.5
     rm -f "$STATE/update-pending"
@@ -202,7 +204,8 @@ pkgs.runCommand "updater-test"
     # ---- scenario 8: the booted version wins over flake.lock -----------------
     # After a failed update the lock can name the new tag while the old one runs.
     : > "$LOG"
-    export SPEC_FILE="$STUBS/spec-v9.json"
+    export SPEC_FILE="$STUBS/spec-lock.json"
+    echo '{"requestId":6,"desiredVersion":"v9.9.9","apply":"now"}' > "$SPEC_FILE"
     pin v0.3.5
     booted v0.3.5
     echo '{"nodes":{"librepod":{"original":{"ref":"v9.9.9"}}}}' > "$FLAKE/flake.lock"
@@ -213,6 +216,56 @@ pkgs.runCommand "updater-test"
       || { echo "FAIL: status currentVersion not from the booted system"; exit 1; }
     grep -q "systemctl reboot" "$LOG" \
       || { echo "FAIL: a lock naming v9.9.9 masked the update as up to date"; exit 1; }
+    rm -f "$STATE/update-pending"
+
+    # ---- scenario 9: a request acts once; later polls stay silent -----------
+    : > "$LOG"
+    export SPEC_FILE="$STUBS/spec-once.json"
+    echo '{"requestId":7,"desiredVersion":"v9.9.9","apply":"now"}' > "$SPEC_FILE"
+    pin v0.3.5
+    bash "$UPDATER"
+    grep -q "systemctl reboot" "$LOG" \
+      || { echo "FAIL: request 7 not applied"; exit 1; }
+    grep -qF 'observedRequestId\": 7' "$LOG" \
+      || { echo "FAIL: status does not name request 7"; exit 1; }
+    # Back on v0.3.5 (say the trial failed) with the same request in the mailbox.
+    : > "$LOG"
+    rm -f "$STATE/update-pending"
+    pin v0.3.5
+    bash "$UPDATER"
+    ! grep -q "systemctl reboot" "$LOG" \
+      || { echo "FAIL: request 7 applied twice"; exit 1; }
+    ! grep -q "patch" "$LOG" \
+      || { echo "FAIL: a poll with nothing new overwrote the status"; exit 1; }
+
+    # ---- scenario 10: a re-created ConfigMap with an old requestId ----------
+    : > "$LOG"
+    export SPEC_FILE="$STUBS/spec-old.json"
+    echo '{"requestId":3,"desiredVersion":"v9.9.9","apply":"now"}' > "$SPEC_FILE"
+    bash "$UPDATER"
+    ! grep -q "systemctl reboot\|patch" "$LOG" \
+      || { echo "FAIL: an old requestId acted"; exit 1; }
+
+    # ---- scenario 11: a version whose trial failed is not retried unattended -
+    : > "$LOG"
+    echo v9.9.9 > "$STATE/failed-versions"
+    export SPEC_FILE="$STUBS/spec-auto.json"
+    echo '{"requestId":8,"desiredVersion":"v9.9.9","policy":{"unattended":true,"window":"22:00-06:00"}}' > "$SPEC_FILE"
+    FAKE_HOUR=23 bash "$UPDATER"
+    ! grep -q "systemctl reboot" "$LOG" \
+      || { echo "FAIL: a failed version was retried unattended"; exit 1; }
+    grep -qF 'state\": \"rejected' "$LOG" \
+      || { echo "FAIL: the skipped retry was not reported"; exit 1; }
+    [ "$(cat "$STATE/request-id")" = 8 ] \
+      || { echo "FAIL: request 8 not recorded as handled"; exit 1; }
+
+    # ---- scenario 12: a new request from the owner retries it ---------------
+    : > "$LOG"
+    export SPEC_FILE="$STUBS/spec-retry.json"
+    echo '{"requestId":9,"desiredVersion":"v9.9.9","apply":"now"}' > "$SPEC_FILE"
+    bash "$UPDATER"
+    grep -q "systemctl reboot" "$LOG" \
+      || { echo "FAIL: the owner's new request did not retry the failed version"; exit 1; }
     rm -f "$STATE/update-pending"
 
     echo "updater scenarios passed"

@@ -103,6 +103,12 @@ hostPkgs.testers.runNixOSTest {
         cm = kubectl_json("-n librepod-os get cm pod-e2e")
         return json.loads(cm["data"].get("status.json", "{}"))
 
+    def request(rid, version):
+        # What the Marketplace writes when the owner clicks Update (docs/updates.md).
+        spec = json.dumps({"requestId": rid, "desiredVersion": version, "apply": "now"})
+        patch = json.dumps({"data": {"spec.json": spec}})
+        pod_e2e.succeed(f"k3s kubectl -n librepod-os patch cm pod-e2e --type merge -p '{patch}'")
+
     def wait_state(state, timeout=300):
         pod_e2e.wait_until_succeeds(
             "k3s kubectl -n librepod-os get cm pod-e2e -o json"
@@ -189,21 +195,17 @@ hostPkgs.testers.runNixOSTest {
 
     assert marker() == "v0.3.5"
 
-    # ---- phase 1: first updater run → label stamped, idle ----------------
+    # ---- phase 1: first updater run → label stamped, nothing reported ----
     pod_e2e.succeed("systemctl start librepod-updater.service")
     pod_e2e.wait_until_succeeds(
         "k3s kubectl get node pod-e2e -o json"
         " | jq -e '.metadata.labels[\"librepod.os/version\"] == \"v0.3.5\"'",
         timeout=120,
     )
-    assert status()["state"] == "idle"
-    assert status()["currentVersion"] == "v0.3.5"  # from the booted system
+    assert status() == {}  # no request yet, so the poll reports nothing
 
     # ---- phase 2: consent update v0.3.5 → v0.4.0 → commit ----------------
-    pod_e2e.succeed(
-        "k3s kubectl -n librepod-os patch cm pod-e2e --type merge"
-        " -p '{\"data\":{\"spec.json\":\"{\\\"desiredVersion\\\":\\\"v0.4.0\\\",\\\"apply\\\":\\\"now\\\"}\"}}'"
-    )
+    request(1, "v0.4.0")
     # The updater reboots the machine mid-command; the shell dies with it.
     start_and_reboot("systemctl start librepod-updater.service")
 
@@ -214,7 +216,8 @@ hostPkgs.testers.runNixOSTest {
         timeout=600,
     )
     wait_state("done", timeout=300)
-    assert status()["currentVersion"] == "v0.4.0"
+    assert status()["currentVersion"] == "v0.4.0"  # from the booted system
+    assert status()["observedRequestId"] == 1
 
     assert marker() == "v0.4.0"
     assert node_label() == "v0.4.0"
@@ -225,10 +228,7 @@ hostPkgs.testers.runNixOSTest {
     assert "v0.4.0" in pod_e2e.succeed("grep inputs.librepod.url /etc/nixos/flake.nix")
 
     # ---- phase 3: broken release v9.9.9 → auto-rollback ------------------
-    pod_e2e.succeed(
-        "k3s kubectl -n librepod-os patch cm pod-e2e --type merge"
-        " -p '{\"data\":{\"spec.json\":\"{\\\"desiredVersion\\\":\\\"v9.9.9\\\",\\\"apply\\\":\\\"now\\\"}\"}}'"
-    )
+    request(2, "v9.9.9")
     start_and_reboot("systemctl start librepod-updater.service")
 
     # Broken gen: k3s absent, sentinel counting down (90 s), then rollback.
@@ -240,14 +240,6 @@ hostPkgs.testers.runNixOSTest {
     wait_reboot_from(timeout=600)  # sentinel rollback reboot
 
     pod_e2e.wait_for_unit("k3s.service", timeout=600)
-
-    # FIRST post-rollback action: withdraw consent before the 2-min updater
-    # timer re-applies v9.9.9 (OnBootSec race — see plan constraints).
-    pod_e2e.succeed(
-        "k3s kubectl -n librepod-os patch cm pod-e2e --type merge"
-        " -p '{\"data\":{\"spec.json\":null}}'"
-    )
-
     pod_e2e.wait_until_succeeds(
         "k3s kubectl get node pod-e2e -o json"
         " | jq -e '.status.conditions[] | select(.type==\"Ready\") | .status==\"True\"'",
@@ -265,6 +257,12 @@ hostPkgs.testers.runNixOSTest {
     wait_state("rolled_back", timeout=300)
     assert status()["currentVersion"] == "v0.4.0"  # booted, not v9.9.9
     pod_e2e.succeed("test ! -e /var/lib/librepod/update-pending")
+    # Request 2 is still in the mailbox, but it was handled: a poll neither
+    # retries v9.9.9 nor overwrites the result.
+    pod_e2e.succeed("systemctl start librepod-updater.service")
+    assert status()["state"] == "rolled_back"
+    assert status()["observedRequestId"] == 2
+    assert marker() == "v0.4.0"
 
     # ---- phase 4: stale flag (power loss mid-flow) → clear, no reboot ----
     from_before = pod_e2e.succeed("readlink -f /nix/var/nix/profiles/system").strip()

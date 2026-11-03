@@ -40,8 +40,13 @@ reconcile_label
 
 SPEC_JSON="$(kctl -n "$NS" get configmap "$NODE_NAME" -o 'jsonpath={.data.spec\.json}' 2>/dev/null || true)"
 
-if [ -z "$SPEC_JSON" ] || [ "$SPEC_JSON" = "null" ]; then
-  report idle "no spec"; exit 0
+# Each request is handled once (docs/updates.md). A poll with nothing new
+# stays silent, so it never overwrites a final status, and a re-created
+# ConfigMap carrying an old requestId does nothing.
+REQ="$(echo "$SPEC_JSON" | jq -r '.requestId // empty' 2>/dev/null || true)"
+LAST="$(cat "$STATE_DIR/request-id" 2>/dev/null || true)"
+if ! [[ "$REQ" =~ ^[0-9]{1,15}$ ]] || [ "$REQ" -le "${LAST:-0}" ]; then
+  exit 0
 fi
 
 DESIRED="$(echo "$SPEC_JSON" | jq -r '.desiredVersion // empty')"
@@ -49,20 +54,23 @@ APPLY="$(echo "$SPEC_JSON" | jq -r '.apply // empty')"
 UNATTENDED="$(echo "$SPEC_JSON" | jq -r '.policy.unattended // false')"
 WINDOW="$(echo "$SPEC_JSON" | jq -r '.policy.window // empty')"
 
+handled() { echo "$REQ" > "$STATE_DIR/request-id"; }
+finish() { handled; report "$1" "$2"; exit 0; } # state, detail
+
 # ---- 2. gate ----------------------------------------------------------------
 if [ -z "$DESIRED" ]; then
-  report idle "no desiredVersion"; exit 0
+  finish rejected "no desiredVersion"
 fi
 # Global constraint: tags only, ever.
 if ! [[ "$DESIRED" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  report idle "rejected: desiredVersion '$DESIRED' is not a release tag"; exit 0
+  finish rejected "desiredVersion '$DESIRED' is not a release tag"
 fi
 if [ "$DESIRED" = "$CURRENT" ]; then
-  report idle "up to date"; exit 0
+  finish "done" "already on $DESIRED"
 fi
 
 if [ "$APPLY" = "now" ]; then
-  : # manual consent: any existing tag, downgrades allowed (UI warns)
+  : # the owner asked: any existing tag, downgrades and failed versions too (UI warns)
 else
   # unattended: policy must opt in, now within window, upgrades only
   in_window() {
@@ -78,15 +86,19 @@ else
     fi
   }
   if [ "$UNATTENDED" != "true" ] || ! in_window; then
-    report idle "waiting: consent or window"; exit 0
+    exit 0   # not handled yet: waits for consent or the window
   fi
   if [ "$CURRENT" != "unknown" ] \
      && ! [ "$(printf '%s\n%s\n' "$CURRENT" "$DESIRED" | sort -V | tail -1)" = "$DESIRED" ]; then
-    report idle "rejected: unattended downgrade to $DESIRED"; exit 0
+    finish rejected "unattended downgrade to $DESIRED"
+  fi
+  if grep -qxF "$DESIRED" "$STATE_DIR/failed-versions" 2>/dev/null; then
+    finish rejected "$DESIRED failed its trial on this device; the owner can ask again"
   fi
 fi
 
 # ---- 3. repin ----------------------------------------------------------------
+handled   # from here on a failed build or rollback never retries it by itself
 report building "repinning to $DESIRED"
 backup_pin   # sentinel restores this on rollback or stale-flag clear
 if ! grep -q "inputs\\.librepod\\.url = \"${URI_PREFIX}v[0-9.]*\"" "$FLAKE_DIR/flake.nix"; then

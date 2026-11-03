@@ -58,6 +58,8 @@ while :; do
   else
     stable_deadline=0
     if [ "$(date +%s)" -ge "$deadline" ]; then
+      # Unattended requests never retry it; only the owner asking again does.
+      echo "$TO" >> "$STATE_DIR/failed-versions"
       # ---- rollback ---------------------------------------------------------
       if [ "$FROM" != "none" ] && [ -e "$FROM/bin/switch-to-configuration" ]; then
         # Stash the intent: the report below goes through kubectl, which is

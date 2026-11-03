@@ -101,7 +101,7 @@ can be a full appliance without a profile in `hw/`:
 Provision a device over netboot with `librepod-install --device lenovo-m710q
 --name pod-1 --identity id.nix` (`--device` also takes a hardware module
 path, e.g. `--device ./my-hardware.nix`). Updates are consent-driven: the Marketplace
-writes intent to ConfigMap `librepod-os/<hostname>`; the host updater applies
+writes intent to ConfigMap `librepod-os/<hostname>` ([contract](docs/updates.md)); the host updater applies
 release tags only (`vX.Y.Z`), reboots, and a boot sentinel rolls the device
 back automatically if the update is unhealthy. Unattended updates need an
 explicit per-device policy (`policy.unattended` + a nightly window).
