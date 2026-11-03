@@ -342,6 +342,7 @@ hostPkgs.testers.runNixOSTest {
         "cd /var/lib/librepod && jq -c '.phase = \"committing\"' update-pending > p.new"
         " && mv p.new update-pending"
     )
+    pod_e2e.succeed("sync")  # on disk, as the device's own writes are; a cut loses the rest
     pod_e2e.crash()
     pod_e2e.start(allow_reboot=True)  # restarts the console log
     # OLD boots, the sentinel finishes the commit and reboots into NEW.
