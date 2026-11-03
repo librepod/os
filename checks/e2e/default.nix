@@ -151,6 +151,9 @@ hostPkgs.testers.runNixOSTest {
         " | jq -e '.status.conditions[] | select(.type==\"Ready\") | .status==\"True\"'",
         timeout=600,
     )
+    # A failed stage 1 must panic and reboot, not sit in emergency mode.
+    cmdline = pod_e2e.succeed("cat /proc/cmdline").split()
+    assert "panic=10" in cmdline and "boot.panic_on_fail" in cmdline, cmdline
 
     # Device flake exactly as librepod-install would lay it down.
     pod_e2e.succeed("mkdir -p /etc/nixos /srv")

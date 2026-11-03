@@ -36,7 +36,14 @@
   # cycle — into an automatic reboot. No-op on hosts without /dev/watchdog.
   systemd.settings.Manager.RuntimeWatchdogSec = "30s";
   # Reboot 10s after a kernel panic instead of hanging on the panic screen.
-  boot.kernel.sysctl."kernel.panic" = 10;
+  # On the command line, not sysctl, so it covers stage 1 too: with
+  # boot.panic_on_fail a failed stage 1 (root disk missing, bad initrd)
+  # panics instead of sitting in emergency mode, so a bad trial boot falls
+  # back to the previous generation by itself.
+  boot.kernelParams = [
+    "panic=10"
+    "boot.panic_on_fail"
+  ];
 
   # Always specify a system state version that matches the starting version of
   # Nixpkgs for that machine and never change it afterwards. In other words, even if
