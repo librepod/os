@@ -22,6 +22,12 @@ reconcile_label() {
     || kctl label node "$NODE_NAME" "librepod.os/version=$cv" --overwrite >/dev/null 2>&1 || true
 }
 
+# An update is in flight (staged, or the sentinel is verifying it): stand
+# down, so a poll neither overwrites its status nor stages a second one on top.
+if [ -e "$STATE_DIR/update-pending" ]; then
+  echo "[librepod] update in flight; skipping this poll"; exit 0
+fi
+
 # ---- 1. ensure ConfigMap exists (first boot: create + stamp status) --------
 if ! kctl -n "$NS" get configmap "$NODE_NAME" >/dev/null 2>&1; then
   kctl create namespace "$NS" >/dev/null 2>&1 || true

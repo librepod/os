@@ -165,6 +165,7 @@ pkgs.runCommand "updater-test"
     echo '{"desiredVersion":"v9.9.9","apply":"now"}' > "$SPEC_FILE"
     export LIBREPOD_URI_PREFIX="git+file:///srv/os?ref="
     printf 'inputs.librepod.url = "git+file:///srv/os?ref=v0.3.5";\n' > "$FLAKE/flake.nix"
+    rm -f "$STATE/update-pending"
 
     bash "$UPDATER"
 
@@ -179,12 +180,22 @@ pkgs.runCommand "updater-test"
     echo '{}' > "$SPEC_FILE"   # no desiredVersion → idle, label reconcile still runs
     pin v0.3.5
     lock v0.3.5
+    rm -f "$STATE/update-pending"
     unset LIBREPOD_NODE_NAME
     HN="$(cat /proc/sys/kernel/hostname)"
     bash "$UPDATER"
     grep -q "label node $HN librepod.os/version=v0.3.5" "$LOG" \
       || { echo "FAIL: hostname fallback broken"; exit 1; }
     export LIBREPOD_NODE_NAME="pod-test"
+
+    # ---- scenario 7: an update in flight → the poll stands down -------------
+    : > "$LOG"
+    export SPEC_FILE="$STUBS/spec-v9.json"
+    echo '{"to":"v9.9.9"}' > "$STATE/update-pending"
+    bash "$UPDATER"
+    [ ! -s "$LOG" ] \
+      || { echo "FAIL: poll touched the cluster while an update was in flight"; exit 1; }
+    rm -f "$STATE/update-pending"
 
     echo "updater scenarios passed"
     touch $out
