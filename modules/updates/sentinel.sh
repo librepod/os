@@ -56,7 +56,10 @@ if [ "$BOOTED" != "$TO" ]; then
     # used-up one-shot brought back OLD. Unattended requests never retry it;
     # only the owner asking again does.
     echo "$VERSION" >> "$STATE_DIR/failed-versions"
-    report rolled_back "$VERSION failed its trial boot; back on $(current_version)"
+    # NEW records why it gave up; no reason means it never got that far
+    # (panic, hang, power cut).
+    reason="$(jq -r '.reason // "trial-did-not-finish"' "$PENDING")"
+    report rolled_back "$VERSION failed its trial boot ($reason); back on $(current_version)"
   else
     # A power cut before the trial boot: nothing ran, so nothing failed.
     report idle "update to $VERSION never started; cleared"
@@ -69,6 +72,7 @@ fi
 # flapping resets the stability clock and ends the trial once unhealthy past it.
 deadline=$(( $(date +%s) + TIMEOUT ))
 stable_deadline=0
+reason=unhealthy # the last thing that failed, for the OLD boot's report
 while :; do
   if healthy; then
     if [ "$stable_deadline" -eq 0 ]; then
@@ -80,13 +84,16 @@ while :; do
       # DNS, HTTPS and the repo. A release that fails it is never committed.
       "$NIX_BIN" flake metadata --refresh "${URI_PREFIX}${VERSION}" >/dev/null && break
       echo "[librepod] cannot fetch ${URI_PREFIX}${VERSION}; not committing"
+      reason=update-source-unreachable
       stable_deadline=0
     fi
   else
+    reason=unhealthy
     stable_deadline=0
   fi
   if [ "$stable_deadline" -eq 0 ] && [ "$(date +%s)" -ge "$deadline" ]; then
     # OLD is still the default, so a reboot ends the trial; the OLD boot reports it.
+    write_pending "$(jq -c --arg r "$reason" '.reason = $r' "$PENDING")"
     "$SYSTEMCTL" reboot
     exit 0
   fi

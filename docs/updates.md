@@ -52,7 +52,7 @@ trial failed. Deleting or re-creating the ConfigMap never starts an update.
   | `building`    | building the requested version                            |
   | `verifying`   | rebooting into it once (a trial), health checks running   |
   | `done`        | the request is fulfilled (or the device was already on it) |
-  | `rolled_back` | the trial boot failed; the device is back on the old version |
+  | `rolled_back` | the trial boot failed; the device is back on the old version. The detail names why: `unhealthy` (k3s, sshd or the node never became healthy), `update-source-unreachable` (healthy, but it could not fetch from its update source), or `trial-did-not-finish` (it never got that far: a panic, a hang or a power cut) |
   | `failed`      | the build failed, or the trial boot could not be set up   |
   | `rejected`    | the request was refused; `detail` says why                |
   | `idle`        | a power cut stopped the update before its trial; cleared  |

@@ -150,12 +150,13 @@ hostPkgs.testers.runNixOSTest {
             pass
         wait_reboot_from(boots + reboots - 1, timeout=600 * reboots)
 
-    def ended_on_old(version, old):
-        # The trial of a bad release is over and the device says so.
+    def ended_on_old(version, old, reason):
+        # The trial of a bad release is over and the device says why.
         wait_healthy()
         wait_state("rolled_back", timeout=300)
         assert marker() == old
         assert status()["currentVersion"] == old
+        assert f"({reason})" in status()["detail"], status()
         pod_e2e.succeed(f"grep -qx {version} /var/lib/librepod/failed-versions")
         pod_e2e.succeed("test ! -e /var/lib/librepod/update-pending")
         assert old in pod_e2e.succeed("grep inputs.librepod.url /etc/nixos/flake.nix")
@@ -303,6 +304,7 @@ hostPkgs.testers.runNixOSTest {
     )
     wait_state("rolled_back", timeout=300)
     assert status()["currentVersion"] == "v0.4.0"  # booted, not v9.9.9
+    assert "(unhealthy)" in status()["detail"], status()
     pod_e2e.succeed("test ! -e /var/lib/librepod/update-pending")
     pod_e2e.succeed("test ! -e /var/lib/librepod/staged")
     pod_e2e.succeed("grep -qx v9.9.9 /var/lib/librepod/failed-versions")
@@ -367,7 +369,7 @@ hostPkgs.testers.runNixOSTest {
     request(5, "v9.9.2")
     start_and_reboot("systemctl start librepod-updater.service", reboots=2)
     assert "Kernel panic" in pod_e2e.get_console_log()
-    ended_on_old("v9.9.2", "v0.5.0")
+    ended_on_old("v9.9.2", "v0.5.0", "trial-did-not-finish")
 
     # ---- phase 8: stage 1 hangs → only a power cut gets out --------------
     request(6, "v9.9.3")
@@ -384,14 +386,14 @@ hostPkgs.testers.runNixOSTest {
     pod_e2e.crash()
     pod_e2e.start(allow_reboot=True)  # restarts the console log
     wait_reboot_from(boots=0)
-    ended_on_old("v9.9.3", "v0.5.0")
+    ended_on_old("v9.9.3", "v0.5.0", "trial-did-not-finish")
 
     # ---- phase 9: runs, but cannot fetch updates → never committed -------
     request(7, "v9.9.4")
     start_and_reboot("systemctl start librepod-updater.service")
     assert marker() == "v9.9.4"
     wait_reboot_from(timeout=600)  # the sentinel ends the trial at its deadline
-    ended_on_old("v9.9.4", "v0.5.0")
+    ended_on_old("v9.9.4", "v0.5.0", "update-source-unreachable")
 
     print("updates-e2e: all scenarios passed")
   '';

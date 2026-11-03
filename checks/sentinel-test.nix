@@ -129,17 +129,20 @@ pkgs.runCommand "sentinel-test"
       || { echo "FAIL: no reboot after failed health checks"; exit 1; }
     ! grep -q "nix-env\|switch-to-configuration" "$CALLS_LOG" \
       || { echo "FAIL: an unhealthy trial touched the profile or boot entries"; exit 1; }
-    jq -e '.phase == "trial"' "$ROOT/state/update-pending" >/dev/null \
-      || { echo "FAIL: the OLD boot needs update-pending to report the failure"; exit 1; }
+    jq -e '.phase == "trial" and .reason == "unhealthy"' "$ROOT/state/update-pending" >/dev/null \
+      || { echo "FAIL: the OLD boot needs update-pending and the reason to report the failure"; exit 1; }
     flake_untouched
 
     # ---- scenario 3: back on OLD after the trial → failed, recorded --------
+    # No reason in update-pending: NEW never got as far as the sentinel.
     boot old trial
     bash "$SENTINEL"
     grep -qx v9.9.9 "$ROOT/state/failed-versions" \
       || { echo "FAIL: failed version not recorded"; exit 1; }
     grep -qF 'state\": \"rolled_back' "$CALLS_LOG" && grep -qF 'currentVersion\": \"v0.4.0' "$CALLS_LOG" \
       || { echo "FAIL: rolled_back on v0.4.0 not reported"; exit 1; }
+    grep -qF '(trial-did-not-finish)' "$CALLS_LOG" \
+      || { echo "FAIL: rolled_back detail does not say the trial did not finish"; exit 1; }
     test ! -e "$ROOT/state/update-pending" && test ! -e "$ROOT/state/staged" \
       || { echo "FAIL: update-pending or the staged copy left behind"; exit 1; }
     ! grep -q "systemctl reboot\|nix-env" "$CALLS_LOG" \
@@ -188,6 +191,12 @@ pkgs.runCommand "sentinel-test"
     ! grep -q "nix-env\|switch-to-configuration" "$CALLS_LOG" \
       || { echo "FAIL: a trial that cannot fetch updates was committed"; exit 1; }
     flake_untouched
+    # The OLD boot that follows names the reason (GitHub #18).
+    : > "$CALLS_LOG"
+    ln -sfn old "$ROOT/current-system"
+    bash "$SENTINEL"
+    grep -qF 'state\": \"rolled_back' "$CALLS_LOG" && grep -qF '(update-source-unreachable)' "$CALLS_LOG" \
+      || { echo "FAIL: rolled_back detail does not name update-source-unreachable"; exit 1; }
 
     echo "sentinel scenarios passed"
     touch $out
