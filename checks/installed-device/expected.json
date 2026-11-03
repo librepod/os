@@ -1,0 +1,20 @@
+{
+  "fileSystems": {
+    "/": {
+      "device": "/dev/pool/root",
+      "fsType": "ext4",
+      "options": [
+        "x-initrd.mount",
+        "defaults"
+      ]
+    },
+    "/boot": {
+      "device": "/dev/disk/by-partlabel/disk-main-ESP",
+      "fsType": "vfat",
+      "options": [
+        "defaults"
+      ]
+    }
+  },
+  "stateVersion": "21.11"
+}

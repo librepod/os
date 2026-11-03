@@ -118,7 +118,8 @@
         #             nodes.librepod.original.ref
         #   device  — supported profile name under ./hw (string), or any
         #             hardware module path (unsupported/personal devices)
-        #   modules — identity modules (users, frpc, per-device bits)
+        #   modules — install-day facts (disk layout, stateVersion) and
+        #             identity modules (users, frpc, per-device bits)
         mkDevice =
           {
             name,
@@ -177,8 +178,7 @@
           '';
 
           # Evaluate each hardware profile standalone as a full NixOS config
-          # (real eval gate) — one eval per profile: two disk layouts can't
-          # live in the same config.
+          # (real eval gate), on the layout the installer writes as disk.nix.
           hw-profiles =
             let
               evalHW =
@@ -187,6 +187,7 @@
                   system = "x86_64-linux";
                   modules = [
                     disko.nixosModules.disko
+                    ./modules/disko
                     hw
                     { system.stateVersion = "25.11"; }
                   ];
@@ -215,7 +216,10 @@
                   inherit device;
                   name = "pod-test";
                   version = "v0.0.0";
-                  modules = [ ./checks/stub-identity.nix ];
+                  modules = [
+                    ./modules/disko # what the installer copies in as disk.nix
+                    ./checks/stub-identity.nix
+                  ];
                 };
             in
             pkgs.runCommand "mk-device-eval"
@@ -232,6 +236,34 @@
                 echo "mkDevice evaluates for both device forms — check passed."
                 touch $out
               '';
+
+          # An installed device keeps its disk: no release may change the file
+          # systems or stateVersion it boots with. A deliberate change (with a
+          # migration for installed devices) updates expected.json.
+          installed-device =
+            let
+              c =
+                (self.lib.mkDevice {
+                  name = "pod-test";
+                  version = "v0.0.0";
+                  device = "lenovo-m710q";
+                  modules = [
+                    ./checks/installed-device/install.nix
+                    ./checks/stub-identity.nix
+                  ];
+                }).config;
+              got = builtins.toJSON {
+                stateVersion = c.system.stateVersion;
+                fileSystems = builtins.mapAttrs (_: f: {
+                  inherit (f) device fsType options;
+                }) c.fileSystems;
+              };
+              want = builtins.toJSON (
+                builtins.fromJSON (builtins.readFile ./checks/installed-device/expected.json)
+              );
+            in
+            assert got == want || throw "an installed device would change: ${got}, expected ${want}";
+            pkgs.runCommand "installed-device" { } "touch $out";
 
           updater-test = pkgs.callPackage ./checks/updater-test.nix { };
           sentinel-test = pkgs.callPackage ./checks/sentinel-test.nix { };

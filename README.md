@@ -84,11 +84,18 @@ plus per-device identity — used by the small flake an installed device owns at
       # the tag above, from the lock; the updater reports it as the running version
       version = (builtins.fromJSON (builtins.readFile ./flake.lock)).nodes.librepod.original.ref;
       device = "lenovo-m710q";          # ./hw/<name>
-      modules = [ ./identity.nix ];     # users, keys, frpc — never hardware
+      modules = [
+        ./install.nix   # disk layout + stateVersion, frozen on install day
+        ./identity.nix  # users, keys, frpc — never hardware
+      ];
     };
   };
 }
 ```
+
+`install.nix` (and the `disk.nix` layout it imports) is written once by the
+installer. Releases never touch it, so a later change to the default layout or
+`stateVersion` reaches new installs only, never a disk already formatted.
 
 Unsupported devices work too — `device` also accepts any hardware module
 path (kernel/boot config, file systems, disko layout), so a personal device
@@ -100,7 +107,8 @@ can be a full appliance without a profile in `hw/`:
 
 Provision a device over netboot with `librepod-install --device lenovo-m710q
 --name pod-1 --identity id.nix` (`--device` also takes a hardware module
-path, e.g. `--device ./my-hardware.nix`). Updates are consent-driven: the Marketplace
+path, e.g. `--device ./my-hardware.nix`; `--disk /dev/sda` for a machine
+without NVMe, default `/dev/nvme0n1`). Updates are consent-driven: the Marketplace
 writes intent to ConfigMap `librepod-os/<hostname>` ([contract](docs/updates.md)); the host updater applies
 release tags only (`vX.Y.Z`) and boots the new version once as a trial; the
 old version stays the boot default until the new one passes its health checks. Unattended updates need an

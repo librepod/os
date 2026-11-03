@@ -9,11 +9,10 @@
 }:
 
 {
+  # No disk layout here: the installer writes it into the device flake
+  # (disk.nix), so an OS update never re-decides how this disk is laid out.
   imports = [
     (modulesPath + "/installer/scan/not-detected.nix")
-    # Default disk layout (GPT, ESP 500M, LVM ext4 root, device mkDefault
-    # /dev/nvme0n1) — imported here so the profile is self-contained.
-    ../../modules/disko
   ];
 
   # Use the systemd-boot EFI boot loader.

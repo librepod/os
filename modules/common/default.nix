@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ lib, pkgs, ... }:
 {
   environment.variables = {
     EDITOR = "nvim";
@@ -50,5 +50,7 @@
   # you upgrade Nixpkgs later on you would keep the state version the same.
   # Nixpkgs uses the state version to migrate your NixOS system because in order to
   # migrate your system each migration needs to know where your system started from.
-  system.stateVersion = "21.11";
+  # New installs get this; the installer writes it into the device flake
+  # (install.nix), which wins, so a later bump never reaches an installed device.
+  system.stateVersion = lib.mkDefault "21.11";
 }
