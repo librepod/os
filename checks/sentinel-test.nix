@@ -17,26 +17,28 @@ pkgs.runCommand "sentinel-test"
 
     # Same concatenation modules/updates/default.nix ships.
     SENTINEL="$ROOT/sentinel"
-    cat "${../modules/updates/common.sh}" "${../modules/updates/sentinel.sh}" > "$SENTINEL"
+    # with the errexit/nounset/pipefail writeShellApplication adds
+    { printf '#!/usr/bin/env bash\nset -euo pipefail\n'; cat "${../modules/updates/common.sh}" "${../modules/updates/sentinel.sh}"; } > "$SENTINEL"
     shellcheck "$SENTINEL"   # writeShellApplication runs it at build time too
 
-    # Real Nix profile layout: generation dirs live in the profile dir, and
-    # the profile link target is relative to that dir (system → system-N-link).
-    mkdir -p "$ROOT/bin" "$ROOT/state" "$ROOT/profiles/new" "$ROOT/profiles/prev/bin" "$ROOT/flake"
-    touch "$ROOT/profiles/new/nixos-version" "$ROOT/profiles/prev/nixos-version"
+    # OLD and NEW toplevels, each with a switch-to-configuration that logs.
+    mkdir -p "$ROOT/bin" "$ROOT/state" "$ROOT/flake"
+    for sys in old new; do
+      mkdir -p "$ROOT/$sys/bin"
+      cat > "$ROOT/$sys/bin/switch-to-configuration" <<EOF
+    #!/bin/sh
+    echo "$sys switch-to-configuration \$*" >> "$CALLS_LOG"
+    EOF
+      chmod +x "$ROOT/$sys/bin/switch-to-configuration"
+    done
     # the booted release the shared report/current_version read
-    echo v9.9.9 > "$ROOT/release"
+    echo v0.4.0 > "$ROOT/release"
 
     cat > "$ROOT/bin/k3s" <<'EOF'
     #!/bin/sh
     echo "k3s $*" >> "$CALLS_LOG"
     case "$*" in
       *"get node"*) cat "$HEALTH_FILE" 2>/dev/null || true;;
-      *"patch"*)
-        # KCTL_BROKEN models the broken generation: the cluster is down.
-        [ -z "$KCTL_BROKEN" ] || exit 1
-        exit 0;;
-      *"label"*|*"create"*) exit 0;;
     esac
     EOF
     chmod +x "$ROOT/bin/k3s"
@@ -56,109 +58,115 @@ pkgs.runCommand "sentinel-test"
     EOF
     chmod +x "$ROOT/bin/nix-env"
 
-    # Real Nix profiles are relative generation links (system-N-link) —
-    # model that so path resolution is exercised the way production does it.
-    # relative generation link, like production's system-N-link
-    ln -sfn new "$ROOT/profiles/system"
-
     export LIBREPOD_STATE_DIR="$ROOT/state" \
            LIBREPOD_NODE_NAME="pod-test" \
            LIBREPOD_FLAKE_DIR="$ROOT/flake" \
            LIBREPOD_RELEASE_FILE="$ROOT/release" \
+           LIBREPOD_CURRENT_SYSTEM="$ROOT/current-system" \
            LIBREPOD_HEALTH_TIMEOUT=0 LIBREPOD_HEALTH_STABLE=0 LIBREPOD_POLL_INTERVAL=0 \
-           LIBREPOD_PROFILE="$ROOT/profiles/system"
+           LIBREPOD_PROFILE="$ROOT/profile"
+    export HEALTH_FILE="$ROOT/health"
 
-    # The device flake on the old pin, and the updater's staged copy on the new.
-    reset_flake() { printf 'old-pin\n' > "$ROOT/flake/flake.nix"; printf 'old-lock\n' > "$ROOT/flake/flake.lock"; }
-    stage() {
+    # A fresh boot: the booted system, an update in flight in the given phase,
+    # the device flake on the old pin and the updater's staged copy on the new.
+    boot() { # old|new, phase
+      : > "$CALLS_LOG"
+      ln -sfn "$1" "$ROOT/current-system"   # relative, like /run/current-system
+      jq -nc --arg from "$ROOT/old" --arg to "$ROOT/new" --arg p "$2" \
+        '{from:$from, to:$to, version:"v9.9.9", requestId:7, phase:$p}' > "$ROOT/state/update-pending"
+      printf 'old-pin\n' > "$ROOT/flake/flake.nix"
+      printf 'old-lock\n' > "$ROOT/flake/flake.lock"
       mkdir -p "$ROOT/state/staged"
       printf 'new-pin\n' > "$ROOT/state/staged/flake.nix"
       printf 'new-lock\n' > "$ROOT/state/staged/flake.lock"
+      rm -f "$ROOT/state/failed-versions"
+      echo 7 > "$ROOT/state/request-id"   # the updater recorded the request
     }
-    reset_flake
+    committed() {
+      grep -qx "nix-env -p $ROOT/profile --set $ROOT/new" "$CALLS_LOG" \
+        || { echo "FAIL: profile not set to NEW"; exit 1; }
+      grep -qx "new switch-to-configuration boot" "$CALLS_LOG" \
+        || { echo "FAIL: NEW not made the default"; exit 1; }
+      [ "$(cat "$ROOT/flake/flake.nix" "$ROOT/flake/flake.lock")" = "$(printf 'new-pin\nnew-lock')" ] \
+        || { echo "FAIL: commit did not take the staged pin"; exit 1; }
+      test ! -e "$ROOT/state/staged" \
+        || { echo "FAIL: staged copy not cleared on commit"; exit 1; }
+    }
+    flake_untouched() {
+      [ "$(cat "$ROOT/flake/flake.nix" "$ROOT/flake/flake.lock")" = "$(printf 'old-pin\nold-lock')" ] \
+        || { echo "FAIL: the device flake changed"; exit 1; }
+    }
 
-    # ---- scenario 1: healthy → label + done ---------------------------------
-    export HEALTH_FILE="$ROOT/health"
+    # ---- scenario 1: healthy trial → commit --------------------------------
     echo "True" > "$ROOT/health"   # node Ready condition status
-    echo "{\"from\":\"$ROOT/profiles/prev\",\"to\":\"v9.9.9\"}" > "$ROOT/state/update-pending"
-    stage   # the updater's staged copy, repinned
-    echo 7 > "$ROOT/state/request-id"   # the updater recorded the request
+    boot new trial
     bash "$SENTINEL"
-    grep -qF 'observedRequestId\": 7' "$CALLS_LOG" \
-      || { echo "FAIL: status does not name the handled request"; exit 1; }
+    committed
     grep -q "label node pod-test librepod.os/version=v9.9.9" "$CALLS_LOG" \
       || { echo "FAIL: success label missing"; exit 1; }
+    grep -qF 'state\": \"done' "$CALLS_LOG" && grep -qF 'observedRequestId\": 7' "$CALLS_LOG" \
+      || { echo "FAIL: done not reported for request 7"; exit 1; }
     test ! -e "$ROOT/state/update-pending" \
       || { echo "FAIL: flag not cleared on success"; exit 1; }
-    [ "$(cat "$ROOT/flake/flake.nix" "$ROOT/flake/flake.lock")" = "$(printf 'new-pin\nnew-lock')" ] \
-      || { echo "FAIL: commit did not take the staged pin"; exit 1; }
-    test ! -e "$ROOT/state/staged" \
-      || { echo "FAIL: staged copy not cleared on commit"; exit 1; }
-
-    # ---- scenario 2: unhealthy → rollback + reboot ----------------------------
-    : > "$CALLS_LOG"
-    echo "NotReady" > "$ROOT/health"
-    echo "{\"from\":\"$ROOT/profiles/prev\",\"to\":\"v9.9.9\"}" > "$ROOT/state/update-pending"
-    ln -sfn new "$ROOT/profiles/system"
-    reset_flake
-    stage
-    cat > "$ROOT/profiles/prev/bin/switch-to-configuration" <<EOF
-    #!/bin/sh
-    echo "prev-s2c \$*" >> "$CALLS_LOG"
-    EOF
-    chmod +x "$ROOT/profiles/prev/bin/switch-to-configuration"
-    bash "$SENTINEL"
-    grep -q "nix-env -p .* --set .*/prev" "$CALLS_LOG" \
-      || { echo "FAIL: rollback did not set previous profile"; exit 1; }
-    grep -q "prev-s2c boot" "$CALLS_LOG" \
-      || { echo "FAIL: previous generation not boot-staged"; exit 1; }
-    grep -q "systemctl reboot" "$CALLS_LOG" \
-      || { echo "FAIL: no reboot after rollback"; exit 1; }
-    test ! -e "$ROOT/state/update-pending" \
-      || { echo "FAIL: flag not cleared on rollback"; exit 1; }
-    [ "$(cat "$ROOT/flake/flake.lock")" = "old-lock" ] \
-      || { echo "FAIL: rollback changed the device flake"; exit 1; }
-    test ! -e "$ROOT/state/staged" \
-      || { echo "FAIL: staged copy not cleared on rollback"; exit 1; }
-    grep -qx v9.9.9 "$ROOT/state/failed-versions" \
-      || { echo "FAIL: rolled-back version not recorded as failed"; exit 1; }
-
-    # ---- scenario 3: stale flag (power loss mid-flow) → clear, no rollback ----
-    : > "$CALLS_LOG"
-    echo "{\"from\":\"$ROOT/profiles/prev\",\"to\":\"v0.3.5\"}" > "$ROOT/state/update-pending"
-    ln -sfn prev "$ROOT/profiles/system"   # current == from → stale
-    reset_flake
-    stage
-    bash "$SENTINEL"
-    test ! -e "$ROOT/state/update-pending" \
-      || { echo "FAIL: stale flag not cleared"; exit 1; }
     ! grep -q "systemctl reboot" "$CALLS_LOG" \
-      || { echo "FAIL: stale flag triggered reboot"; exit 1; }
-    [ "$(cat "$ROOT/flake/flake.nix")" = "old-pin" ] \
-      || { echo "FAIL: stale clear changed the device flake"; exit 1; }
-    test ! -e "$ROOT/state/staged" \
-      || { echo "FAIL: staged copy not cleared on a stale flag"; exit 1; }
+      || { echo "FAIL: rebooted after a commit on NEW"; exit 1; }
 
-    # ---- scenario 4: rollback status survives k3s being down ----------------
-    # The report goes through kubectl, which is dead on the broken gen —
-    # E2E found the status silently lost. The stash must resend it after the
-    # rolled-back generation is up and the cluster answers again.
-    : > "$CALLS_LOG"
+    # ---- scenario 2: unhealthy trial → reboot, OLD is still the default ----
     echo "NotReady" > "$ROOT/health"
-    export KCTL_BROKEN=1
-    echo "{\"from\":\"$ROOT/profiles/prev\",\"to\":\"v9.9.9\"}" > "$ROOT/state/update-pending"
-    ln -sfn new "$ROOT/profiles/system"
+    boot new trial
     bash "$SENTINEL"
-    test -f "$ROOT/state/rollback-pending" \
-      || { echo "FAIL: rollback intent not stashed"; exit 1; }
-    # Post-rollback boot: cluster back, sentinel runs again (unit condition:
-    # the stash), the status lands.
-    unset KCTL_BROKEN
+    grep -q "systemctl reboot" "$CALLS_LOG" \
+      || { echo "FAIL: no reboot after failed health checks"; exit 1; }
+    ! grep -q "nix-env\|switch-to-configuration" "$CALLS_LOG" \
+      || { echo "FAIL: an unhealthy trial touched the profile or boot entries"; exit 1; }
+    jq -e '.phase == "trial"' "$ROOT/state/update-pending" >/dev/null \
+      || { echo "FAIL: the OLD boot needs update-pending to report the failure"; exit 1; }
+    flake_untouched
+
+    # ---- scenario 3: back on OLD after the trial → failed, recorded --------
+    boot old trial
     bash "$SENTINEL"
-    test ! -e "$ROOT/state/rollback-pending" \
-      || { echo "FAIL: rollback stash not cleared after resend"; exit 1; }
-    grep -q "rolled_back" "$CALLS_LOG" \
-      || { echo "FAIL: stashed rolled_back status never resent"; exit 1; }
+    grep -qx v9.9.9 "$ROOT/state/failed-versions" \
+      || { echo "FAIL: failed version not recorded"; exit 1; }
+    grep -qF 'state\": \"rolled_back' "$CALLS_LOG" && grep -qF 'currentVersion\": \"v0.4.0' "$CALLS_LOG" \
+      || { echo "FAIL: rolled_back on v0.4.0 not reported"; exit 1; }
+    test ! -e "$ROOT/state/update-pending" && test ! -e "$ROOT/state/staged" \
+      || { echo "FAIL: update-pending or the staged copy left behind"; exit 1; }
+    ! grep -q "systemctl reboot\|nix-env" "$CALLS_LOG" \
+      || { echo "FAIL: the OLD boot rebooted or touched the profile"; exit 1; }
+    flake_untouched
+
+    # ---- scenario 4: power cut before the trial → cleared, nothing failed --
+    boot old staged
+    bash "$SENTINEL"
+    test ! -e "$ROOT/state/failed-versions" \
+      || { echo "FAIL: an update that never ran was recorded as failed"; exit 1; }
+    grep -qF 'state\": \"idle' "$CALLS_LOG" \
+      || { echo "FAIL: idle not reported"; exit 1; }
+    test ! -e "$ROOT/state/update-pending" && test ! -e "$ROOT/state/staged" \
+      || { echo "FAIL: update-pending or the staged copy left behind"; exit 1; }
+    flake_untouched
+
+    # ---- scenario 5: power cut mid-commit → finish it, then boot NEW -------
+    # The cut came after the profile switch and before the boot entries, so
+    # the machine came back on OLD.
+    boot old committing
+    bash "$SENTINEL"
+    committed
+    grep -q "systemctl reboot" "$CALLS_LOG" \
+      || { echo "FAIL: commit on OLD did not reboot into NEW"; exit 1; }
+    jq -e '.phase == "committing"' "$ROOT/state/update-pending" >/dev/null \
+      || { echo "FAIL: the NEW boot needs update-pending to report done"; exit 1; }
+    : > "$CALLS_LOG"
+    ln -sfn new "$ROOT/current-system"
+    echo v9.9.9 > "$ROOT/release"
+    bash "$SENTINEL"
+    grep -qF 'state\": \"done' "$CALLS_LOG" && grep -qF 'currentVersion\": \"v9.9.9' "$CALLS_LOG" \
+      || { echo "FAIL: done on v9.9.9 not reported after the interrupted commit"; exit 1; }
+    test ! -e "$ROOT/state/update-pending" \
+      || { echo "FAIL: flag not cleared after the interrupted commit"; exit 1; }
+    ! grep -q "systemctl reboot" "$CALLS_LOG" \
+      || { echo "FAIL: rebooted again on NEW"; exit 1; }
 
     echo "sentinel scenarios passed"
     touch $out

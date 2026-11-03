@@ -20,19 +20,36 @@ pkgs.runCommand "updater-test"
 
     # Same concatenation modules/updates/default.nix ships.
     UPDATER="$STUBS/updater"
-    cat "${../modules/updates/common.sh}" "${../modules/updates/updater.sh}" > "$UPDATER"
+    # with the errexit/nounset/pipefail writeShellApplication adds
+    { printf '#!/usr/bin/env bash\nset -euo pipefail\n'; cat "${../modules/updates/common.sh}" "${../modules/updates/updater.sh}"; } > "$UPDATER"
     shellcheck "$UPDATER"   # writeShellApplication runs it at build time too
 
     # ---- stubs -------------------------------------------------------------
-    mkdir -p "$STUBS/bin" "$STUBS/fake-out/bin" "$FLAKE" "$STATE"
+    mkdir -p "$STUBS/bin" "$STUBS/fake-out/bin" "$STUBS/old-system/bin" "$FLAKE" "$STATE"
     touch "$STUBS/fake-out/nixos-version"   # clan activation step 1 passes
 
-    # fake switch-to-configuration inside the build output the nix stub returns
-    cat > "$STUBS/fake-out/bin/switch-to-configuration" <<EOF
+    # fake switch-to-configuration in NEW (the build output the nix stub
+    # returns) and in OLD (the running system)
+    for sys in fake-out old-system; do
+      cat > "$STUBS/$sys/bin/switch-to-configuration" <<EOF
     #!/bin/sh
-    echo "switch-to-configuration \$*" >> "$CALLS_LOG"
+    echo "$sys switch-to-configuration \$*" >> "$CALLS_LOG"
     EOF
-    chmod +x "$STUBS/fake-out/bin/switch-to-configuration"
+      chmod +x "$STUBS/$sys/bin/switch-to-configuration"
+    done
+    ln -s old-system "$STUBS/current-system"   # relative, like /run/current-system
+    export LIBREPOD_CURRENT_SYSTEM="$STUBS/current-system"
+
+    cat > "$STUBS/bin/bootctl" <<EOF
+    #!/bin/sh
+    echo "bootctl \$*" >> "$CALLS_LOG"
+    if [ "\$1" = list ]; then
+      if [ -n "\$FAKE_NO_ENTRY" ]; then echo '[]'; exit 0; fi
+      echo '[{"id":"old.conf","options":"init=$STUBS/old-system/init"},'
+      echo ' {"id":"new.conf","options":"init=$STUBS/fake-out/init"}]'
+    fi
+    EOF
+    chmod +x "$STUBS/bin/bootctl"
 
     cat > "$STUBS/bin/k3s" <<'EOF'
     #!/bin/sh
@@ -120,25 +137,25 @@ pkgs.runCommand "updater-test"
       || { echo "FAIL: staged flake.lock not updated to v9.9.9"; exit 1; }
     grep -q 'v0.3.5' "$FLAKE/flake.nix" \
       || { echo "FAIL: the device flake changed before the update committed"; exit 1; }
-    grep -q "nix-env -p /nix/var/nix/profiles/system --set" "$LOG" \
-      || { echo "FAIL: profile not set"; exit 1; }
-    grep -q "switch-to-configuration boot" "$LOG" \
-      || { echo "FAIL: boot staging missing"; exit 1; }
+    # The trial: NEW gets an entry, OLD stays the profile and the default,
+    # and the one-shot points at NEW.
+    [ "$(grep -o 'nix-env -p [^ ]* --set .*' "$LOG")" = "$(printf '%s\n' \
+        "nix-env -p /nix/var/nix/profiles/system --set $STUBS/fake-out" \
+        "nix-env -p /nix/var/nix/profiles/system --set $STUBS/old-system")" ] \
+      || { echo "FAIL: profile not set to NEW, then back to OLD"; exit 1; }
+    grep -qx "old-system switch-to-configuration boot" "$LOG" \
+      || { echo "FAIL: boot entries not written from OLD"; exit 1; }
+    ! grep -q "fake-out switch-to-configuration" "$LOG" \
+      || { echo "FAIL: NEW was made the default"; exit 1; }
+    grep -qx "bootctl set-oneshot new.conf" "$LOG" \
+      || { echo "FAIL: one-shot not pointed at NEW"; exit 1; }
     grep -q "systemctl reboot" "$LOG" \
       || { echo "FAIL: reboot missing"; exit 1; }
-    test -f "$STATE/update-pending" \
-      || { echo "FAIL: sentinel flag not staged"; exit 1; }
-    grep -q '"to":"v9.9.9"' "$STATE/update-pending" \
-      || { echo "FAIL: sentinel flag missing target version"; exit 1; }
-    # 'from' must be fully resolved (absolute store path) or none — a relative
-    # generation link here would make the sentinel's rollback check miss.
-    case "$(jq -r '.from' "$STATE/update-pending")" in
-      none|/*) :;;
-      *) echo "FAIL: staged 'from' is not a resolved path"; exit 1;;
-    esac
-    # v1 has no live switch:
-    ! grep -q "switch-to-configuration switch" "$LOG" \
-      || { echo "FAIL: live switch attempted (v1 is boot+reboot only)"; exit 1; }
+    # 'from' resolved: a relative link would never match the booted system.
+    jq -e --arg old "$STUBS/old-system" --arg new "$STUBS/fake-out" \
+      '.phase == "trial" and .from == $old and .to == $new
+       and .version == "v9.9.9" and .requestId == 2' "$STATE/update-pending" >/dev/null \
+      || { echo "FAIL: update-pending wrong: $(cat "$STATE/update-pending")"; exit 1; }
 
     # ---- scenario 3: unattended path ignores downgrade ----------------------
     : > "$LOG"
@@ -291,6 +308,17 @@ pkgs.runCommand "updater-test"
     ! grep -q "already on" "$LOG" && grep -q "systemctl reboot" "$LOG" \
       || { echo "FAIL: the poll after a failed build claimed up to date"; exit 1; }
     rm -f "$STATE/update-pending"
+
+    # ---- scenario 14: no boot entry for NEW → no trial, no reboot -----------
+    : > "$LOG"
+    echo '{"requestId":12,"desiredVersion":"v9.9.9","apply":"now"}' > "$SPEC_FILE"
+    FAKE_NO_ENTRY=1 bash "$UPDATER" || true
+    ! grep -q "systemctl reboot\|set-oneshot" "$LOG" \
+      || { echo "FAIL: rebooted without a trial entry"; exit 1; }
+    test ! -e "$STATE/update-pending" \
+      || { echo "FAIL: update-pending left behind; the updater would stand down for good"; exit 1; }
+    grep -qF 'state\": \"failed' "$LOG" \
+      || { echo "FAIL: the failed trial setup was not reported"; exit 1; }
 
     echo "updater scenarios passed"
     touch $out

@@ -14,9 +14,14 @@ NIX_ENV_BIN="${NIX_ENV_BIN:-nix-env}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 PROFILE="${LIBREPOD_PROFILE:-/nix/var/nix/profiles/system}"
 RELEASE_FILE="${LIBREPOD_RELEASE_FILE:-/run/current-system/etc/librepod-release}"
+# What runs now: OLD while the updater stages, NEW on the trial boot.
+CURRENT_SYSTEM="${LIBREPOD_CURRENT_SYSTEM:-/run/current-system}"
 # The updater repins and builds in this copy of FLAKE_DIR; the sentinel
 # copies the pin back only when the update commits.
 STAGED="$STATE_DIR/staged"
+# The update in flight: {from, to, version, requestId, phase}, where phase
+# goes staged → trial → committing.
+PENDING="$STATE_DIR/update-pending"
 
 # shellcheck disable=SC2086  # KUBECTL may be multiple words ("k3s kubectl")
 kctl() { $KUBECTL "$@"; }
@@ -39,3 +44,7 @@ report() { # state, detail — best-effort telemetry; cv from the booted system
     -p "$(jq -n --arg s "$json" '{data:{"status.json":$s}}')" >/dev/null 2>&1 || true
   echo "[librepod][$1] $2"
 }
+
+# Write-then-rename: the sentinel reads it after a power cut.
+write_pending() { echo "$1" > "$PENDING.new" && mv -f "$PENDING.new" "$PENDING"; }
+set_phase() { write_pending "$(jq -c --arg p "$1" '.phase = $p' "$PENDING")"; }

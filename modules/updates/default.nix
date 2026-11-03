@@ -9,7 +9,7 @@ let
   cfg = config.librepod.updates;
 
   # Shared env/status scaffolding, prepended to both scripts so they can't
-  # drift (env defaults, kctl, current_version, report, pin backup/restore).
+  # drift (env defaults, kctl, current_version, report, update-pending).
   common = builtins.readFile ./common.sh;
 
   mkScript =
@@ -20,7 +20,7 @@ let
         nix
         jq
         k3s
-        systemd
+        config.systemd.package # bootctl, matching the running systemd
       ];
       text = common + text;
     };
@@ -67,8 +67,11 @@ in
     };
 
     systemd.services.librepod-update-sentinel = {
-      description = "LibrePod update sentinel — verify or roll back the staged update";
+      description = "LibrePod update sentinel — commit or end the trial boot";
       wantedBy = [ "multi-user.target" ];
+      # Boot counting (GitHub #17) will mark a boot good only after this passes.
+      requiredBy = [ "boot-complete.target" ];
+      before = [ "boot-complete.target" ];
       after = [
         "network-online.target"
         "k3s.service"
@@ -80,24 +83,6 @@ in
         ExecStart = "${sentinel}/bin/librepod-update-sentinel";
         # 15 min health budget + slack; the script also self-limits.
         TimeoutStartSec = "25min";
-      };
-    };
-
-    # Resends the rolled_back status after a rollback reboot: the sentinel's
-    # original report goes through kubectl, which is down on the broken
-    # generation. The sentinel binary self-dispatches on the stash.
-    systemd.services.librepod-rollback-report = {
-      description = "LibrePod update sentinel — deliver the stashed rollback status";
-      wantedBy = [ "multi-user.target" ];
-      after = [
-        "network-online.target"
-        "k3s.service"
-      ];
-      wants = [ "network-online.target" ];
-      unitConfig.ConditionPathExists = "${stateDir}/rollback-pending";
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStart = "${sentinel}/bin/librepod-update-sentinel";
       };
     };
 

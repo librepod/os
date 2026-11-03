@@ -47,9 +47,17 @@ trial failed. Deleting or re-creating the ConfigMap never starts an update.
   | state         | meaning                                                   |
   | ------------- | --------------------------------------------------------- |
   | `building`    | building the requested version                            |
-  | `verifying`   | rebooted into it, health checks running                   |
+  | `verifying`   | rebooting into it once (a trial), health checks running   |
   | `done`        | the request is fulfilled (or the device was already on it) |
-  | `rolled_back` | the new version failed its health checks; back on the old |
-  | `failed`      | the build failed, or there was no old version to go back to |
+  | `rolled_back` | the trial boot failed; the device is back on the old version |
+  | `failed`      | the build failed, or the trial boot could not be set up   |
   | `rejected`    | the request was refused; `detail` says why                |
-  | `idle`        | an update flag left by a power loss was cleared           |
+  | `idle`        | a power cut stopped the update before its trial; cleared  |
+
+## The trial boot
+
+The device builds the new version beside the running one and boots it once.
+The old version stays the boot default until the new one passes its health
+checks (k3s, sshd, node Ready), so any failure — a panic, a hang, a power
+cut, failed checks — lands back on the old version at the next boot.
+`/etc/nixos` takes the new pin only once the update commits.

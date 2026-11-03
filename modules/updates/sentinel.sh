@@ -1,29 +1,18 @@
-# LibrePod update sentinel — runs at boot when an update was staged.
-# Healthy → commit (label + done). Unhealthy → rollback previous generation.
-# Stale flag → clear. No previous generation → failed (frp SSH is the rescue).
+# LibrePod update sentinel — runs at boot while an update is in flight.
+# On the trial boot (NEW): healthy → commit; unhealthy → reboot, and the
+# used-up one-shot brings back OLD. Back on OLD: record how the update ended.
 # (common.sh is prepended by modules/updates/default.nix.)
 
 TIMEOUT="${LIBREPOD_HEALTH_TIMEOUT:-900}"
 STABLE="${LIBREPOD_HEALTH_STABLE:-120}"
 INTERVAL="${LIBREPOD_POLL_INTERVAL:-15}"
 
-PENDING="$STATE_DIR/update-pending"
-STASH="$STATE_DIR/rollback-pending"
+[ -f "$PENDING" ] || exit 0
 
-if [ ! -f "$PENDING" ]; then
-  # Post-rollback boot: the rolled_back report couldn't land while the
-  # broken generation's k3s was down. Resend it now that the cluster is
-  # back (the librepod-rollback-report unit runs us for exactly this).
-  if [ -f "$STASH" ]; then
-    TO="$(jq -r '.to' "$STASH")"
-    rm -f "$STASH"
-    report rolled_back "update to $TO rolled back after failed health checks"
-  fi
-  exit 0
-fi
-
-FROM="$(jq -r '.from' "$PENDING")"
-TO="$(jq -r '.to' "$PENDING")"
+TO="$(jq -r '.to // empty' "$PENDING")"
+VERSION="$(jq -r '.version // empty' "$PENDING")"
+PHASE="$(jq -r '.phase // empty' "$PENDING")"
+BOOTED="$(readlink -f "$CURRENT_SYSTEM")"
 
 healthy() {
   "$SYSTEMCTL" is-active --quiet k3s \
@@ -31,18 +20,53 @@ healthy() {
     && [ "$(kctl get node "$NODE_NAME" -o 'jsonpath={.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" = "True" ]
 }
 
-# Stale flag: profile unchanged since staging (power loss mid-flow) — the
-# reboot never landed, nothing to verify or roll back.
-# -f: profile symlinks are relative generation links (system-N-link)
-CURRENT="$(readlink -f "$PROFILE" || true)"
-if [ -n "$CURRENT" ] && [ "$CURRENT" = "$FROM" ]; then
+# Every step is safe to repeat: after a power cut the next boot runs it all
+# again. Boot counting (GitHub #17) replaces only this.
+commit_trial() {
+  set_phase committing
+  "$NIX_ENV_BIN" -p "$PROFILE" --set "$TO"
+  "$TO/bin/switch-to-configuration" boot
+  # Only now does FLAKE_DIR take the new pin. Write-then-rename, so a power
+  # cut never leaves a half-written file.
+  if [ -d "$STAGED" ]; then
+    for f in flake.nix flake.lock; do
+      cp "$STAGED/$f" "$FLAKE_DIR/.$f.new" && mv -f "$FLAKE_DIR/.$f.new" "$FLAKE_DIR/$f"
+    done
+    rm -rf "$STAGED"
+  fi
+  if [ "$BOOTED" != "$TO" ]; then
+    # A power cut mid-commit brought back OLD; NEW is the default now.
+    "$SYSTEMCTL" reboot
+    exit 0
+  fi
+  # If this label is dropped, the updater's next-poll reconcile_label heals it.
+  kctl label node "$NODE_NAME" "librepod.os/version=$VERSION" --overwrite >/dev/null 2>&1 || true
+  report "done" "update to $VERSION verified healthy"
+  rm -f "$PENDING"
+}
+
+if [ "$PHASE" = committing ]; then
+  commit_trial
+  exit 0
+fi
+
+if [ "$BOOTED" != "$TO" ]; then
+  if [ "$PHASE" = trial ]; then
+    # The trial boot failed (health checks, panic, hang or power cut) and the
+    # used-up one-shot brought back OLD. Unattended requests never retry it;
+    # only the owner asking again does.
+    echo "$VERSION" >> "$STATE_DIR/failed-versions"
+    report rolled_back "$VERSION failed its trial boot; back on $(current_version)"
+  else
+    # A power cut before the trial boot: nothing ran, so nothing failed.
+    report idle "update to $VERSION never started; cleared"
+  fi
   rm -rf "$PENDING" "$STAGED"
-  report idle "stale sentinel flag cleared (update never landed)"
   exit 0
 fi
 
 # ponytail: a node healthy-but-not-yet-stable past the deadline keeps waiting;
-# flapping resets the stability clock and rolls back once unhealthy past it.
+# flapping resets the stability clock and ends the trial once unhealthy past it.
 deadline=$(( $(date +%s) + TIMEOUT ))
 stable_deadline=0
 while :; do
@@ -56,37 +80,12 @@ while :; do
   else
     stable_deadline=0
     if [ "$(date +%s)" -ge "$deadline" ]; then
-      # Unattended requests never retry it; only the owner asking again does.
-      echo "$TO" >> "$STATE_DIR/failed-versions"
-      # ---- rollback ---------------------------------------------------------
-      if [ "$FROM" != "none" ] && [ -e "$FROM/bin/switch-to-configuration" ]; then
-        # Stash the intent: the report below goes through kubectl, which is
-        # down on the broken generation — the post-rollback boot resends it.
-        cp "$PENDING" "$STASH"
-        report rolled_back "health check failed — rolling back to $FROM"
-        "$NIX_ENV_BIN" -p "$PROFILE" --set "$FROM"
-        "$FROM/bin/switch-to-configuration" boot
-        rm -rf "$PENDING" "$STAGED"
-        "$SYSTEMCTL" reboot
-        exit 0
-      else
-        rm -f "$PENDING"
-        report failed "health check failed and no previous generation — manual rescue via frp SSH"
-        exit 1
-      fi
+      # OLD is still the default, so a reboot ends the trial; the OLD boot reports it.
+      "$SYSTEMCTL" reboot
+      exit 0
     fi
   fi
   sleep "$INTERVAL"
 done
 
-# ---- commit -----------------------------------------------------------------
-# Only now does FLAKE_DIR take the new pin. Write-then-rename, so a power cut
-# never leaves a half-written file.
-for f in flake.nix flake.lock; do
-  cp "$STAGED/$f" "$FLAKE_DIR/.$f.new" && mv -f "$FLAKE_DIR/.$f.new" "$FLAKE_DIR/$f"
-done
-rm -rf "$PENDING" "$STASH" "$STAGED"
-# Label from $TO directly (the lock may be unreadable here); if this call is
-# dropped, the updater's next-poll reconcile_label heals it.
-kctl label node "$NODE_NAME" "librepod.os/version=$TO" --overwrite >/dev/null 2>&1 || true
-report "done" "update to $TO verified healthy"
+commit_trial

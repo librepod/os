@@ -3,6 +3,7 @@
 # (common.sh is prepended by modules/updates/default.nix.)
 
 NIX_BIN="${NIX_BIN:-nix}"
+BOOTCTL="${BOOTCTL:-bootctl}"
 
 # Pin location. Default is the real release repo; the E2E suite points this
 # at a local git+file repo. BRE-safe prefixes only (+ ? / : are literal).
@@ -24,7 +25,7 @@ reconcile_label() {
 
 # An update is in flight (staged, or the sentinel is verifying it): stand
 # down, so a poll neither overwrites its status nor stages a second one on top.
-if [ -e "$STATE_DIR/update-pending" ]; then
+if [ -e "$PENDING" ]; then
   echo "[librepod] update in flight; skipping this poll"; exit 0
 fi
 
@@ -110,20 +111,34 @@ sed -i "s|${URI_PREFIX}v[0-9.]*|${URI_PREFIX}${DESIRED}|" "$STAGED/flake.nix"
 "$NIX_BIN" flake update librepod --flake "$STAGED" >/dev/null \
   || die "nix flake update failed for $DESIRED"
 
-# ---- 4. apply (clan activation sequence; no live switch in v1) ---------------
+# The next boot, and only that one, runs NEW: NEW gets a boot entry and OLD
+# stays the default. Boot counting (GitHub #17) replaces only this.
+# Chained with &&: set -e does not apply inside a function called with ||.
+start_trial() { # old toplevel, new toplevel
+  local entry
+  # --set OLD, not --rollback: after an earlier trial, rollback would land on
+  # that trial's generation.
+  "$NIX_ENV_BIN" -p "$PROFILE" --set "$2" \
+    && "$NIX_ENV_BIN" -p "$PROFILE" --set "$1" \
+    && "$1/bin/switch-to-configuration" boot \
+    && entry="$("$BOOTCTL" list --json=short | jq -r --arg new "$2" \
+      'first(.[] | select(tostring | contains($new)) | .id) // empty')" \
+    && [ -n "$entry" ] \
+    && "$BOOTCTL" set-oneshot "$entry"
+}
+
+# ---- 4. build (no live switch) -------------------------------------------------
 OUT="$("$NIX_BIN" build --no-link --print-out-paths \
   "$STAGED#nixosConfigurations.$NODE_NAME.config.system.build.toplevel" 2>/dev/null)" \
   || die "build failed for $DESIRED"
 
 [ -e "$OUT/nixos-version" ] || die "build output missing nixos-version — refusing to activate"
 
-# -f: profile symlinks are relative generation links (system-N-link)
-PREV="$(readlink -f "$PROFILE" || true)"
-"$NIX_ENV_BIN" -p "$PROFILE" --set "$OUT"
-"$OUT/bin/switch-to-configuration" boot
-
-# ---- 5. stage sentinel + reboot ------------------------------------------------
-jq -nc --arg from "${PREV:-none}" --arg to "$DESIRED" \
-  '{from:$from, to:$to, stagedAt:(now|todate)}' > "$STATE_DIR/update-pending"
-report verifying "rebooting into $DESIRED; sentinel will verify"
+# ---- 5. trial boot: the sentinel commits NEW or the next boot is OLD again ----
+FROM="$(readlink -f "$CURRENT_SYSTEM")"
+write_pending "$(jq -nc --arg from "$FROM" --arg to "$OUT" --arg v "$DESIRED" --argjson rid "$REQ" \
+  '{from:$from, to:$to, version:$v, requestId:$rid, phase:"staged", stagedAt:(now|todate)}')"
+start_trial "$FROM" "$OUT" || { rm -f "$PENDING"; die "could not set up the trial boot of $DESIRED"; }
+set_phase trial
+report verifying "rebooting into $DESIRED once; it stays only if healthy"
 "$SYSTEMCTL" reboot

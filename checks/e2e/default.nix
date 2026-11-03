@@ -87,7 +87,7 @@ hostPkgs.testers.runNixOSTest {
   extraPythonPackages = ps: [ ];
 
   testScript = ''
-    import json, time
+    import base64, json, time
 
     def kubectl_json(shellpath):
         return json.loads(pod_e2e.succeed(f"k3s kubectl {shellpath} -o json"))
@@ -115,12 +115,13 @@ hostPkgs.testers.runNixOSTest {
             timeout=timeout,
         )
 
-    def wait_reboot_from(bid=None, timeout=600):
+    def wait_reboot_from(boots=None, timeout=600):
         # No wait_for_reboot in this driver. Polling the SHELL through a
         # reboot floods the reconnect with garbage (broken pipes, base64
         # desync, non-ascii) — count kernel-boot lines in the append-only
         # console log instead, then reconnect once, cleanly.
-        boots = pod_e2e.get_console_log().count("Linux version")
+        if boots is None:
+            boots = pod_e2e.get_console_log().count("Linux version")
         deadline = time.time() + timeout
         while time.time() < deadline:
             if pod_e2e.get_console_log().count("Linux version") > boots:
@@ -145,7 +146,39 @@ hostPkgs.testers.runNixOSTest {
             pod_e2e.execute(cmd, check_return=False, timeout=300)
         except (BrokenPipeError, ValueError):  # binascii.Error, UnicodeEncodeError are ValueErrors
             pass
-        wait_reboot_from(None)
+        wait_reboot_from()
+
+    def wait_healthy():
+        pod_e2e.wait_for_unit("k3s.service", timeout=600)
+        pod_e2e.wait_until_succeeds(
+            "k3s kubectl get node pod-e2e -o json"
+            " | jq -e '.status.conditions[] | select(.type==\"Ready\") | .status==\"True\"'",
+            timeout=600,
+        )
+
+    def stage_only():
+        # The updater with a no-op reboot: the trial is set up, and the test
+        # looks at it before rebooting.
+        pod_e2e.succeed("systemctl set-environment SYSTEMCTL=true")
+        pod_e2e.succeed("systemctl start librepod-updater.service")
+        pod_e2e.succeed("systemctl unset-environment SYSTEMCTL")
+
+    def boot_entry(eid=None):
+        # The default entry, or the one with this id, as JSON text.
+        entries = json.loads(pod_e2e.succeed("bootctl list --json=short"))
+        hits = [e for e in entries if (e["id"] == eid if eid else e.get("isDefault"))]
+        assert len(hits) == 1, entries
+        return json.dumps(hits[0])
+
+    def oneshot_entry():
+        # LoaderEntryOneShot: 4 attribute bytes, then the entry id in UTF-16LE.
+        raw = base64.b64decode(pod_e2e.succeed(
+            "base64 -w0 /sys/firmware/efi/efivars/LoaderEntryOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
+        ))
+        return boot_entry(raw[4:].decode("utf-16-le").rstrip("\x00"))
+
+    def pending():
+        return json.loads(pod_e2e.succeed("cat /var/lib/librepod/update-pending"))
 
     # allow_reboot: guest reboots must reset QEMU in-process, not exit it —
     # the updater/sentinel reboot the machine repeatedly.
@@ -205,17 +238,16 @@ hostPkgs.testers.runNixOSTest {
     )
     assert status() == {}  # no request yet, so the poll reports nothing
 
-    # ---- phase 2: consent update v0.3.5 → v0.4.0 → commit ----------------
+    # ---- phase 2: consent update v0.3.5 → v0.4.0: trial, then commit -----
     request(1, "v0.4.0")
-    # The updater reboots the machine mid-command; the shell dies with it.
-    start_and_reboot("systemctl start librepod-updater.service")
+    old = pod_e2e.succeed("readlink -f /run/current-system").strip()
+    stage_only()
+    assert old in boot_entry()  # OLD stays the default
+    assert "${topPath.v0_4_0}" in oneshot_entry()  # the next boot runs NEW
+    assert pending()["phase"] == "trial"
+    start_and_reboot("systemctl reboot")
 
-    pod_e2e.wait_for_unit("k3s.service", timeout=600)
-    pod_e2e.wait_until_succeeds(
-        "k3s kubectl get node pod-e2e -o json"
-        " | jq -e '.status.conditions[] | select(.type==\"Ready\") | .status==\"True\"'",
-        timeout=600,
-    )
+    wait_healthy()
     wait_state("done", timeout=300)
     assert status()["currentVersion"] == "v0.4.0"  # from the booted system
     assert status()["observedRequestId"] == 1
@@ -226,29 +258,28 @@ hostPkgs.testers.runNixOSTest {
     pod_e2e.succeed("test ! -e /var/lib/librepod/update-pending")
     pod_e2e.succeed("test ! -e /var/lib/librepod/staged")
     assert "v0.4.0" in pod_e2e.succeed("grep inputs.librepod.url /etc/nixos/flake.nix")
+    # Committed: NEW is the default now, so it outlives the one-shot.
+    assert "${topPath.v0_4_0}" in boot_entry()
+    start_and_reboot("systemctl reboot")
+    wait_healthy()
+    assert marker() == "v0.4.0"
 
-    # ---- phase 3: broken release v9.9.9 → auto-rollback ------------------
+    # ---- phase 3: broken release v9.9.9 → the trial ends on OLD ----------
     request(2, "v9.9.9")
     start_and_reboot("systemctl start librepod-updater.service")
 
-    # Broken gen: k3s absent, sentinel counting down (90 s), then rollback.
+    # The trial boot: k3s absent, sentinel counting down (90 s), then reboot.
     pod_e2e.wait_until_succeeds(
         "test \"$(cat /etc/librepod-release)\" = v9.9.9", timeout=300
     )
     pod_e2e.fail("systemctl is-active --quiet k3s")
-    pod_e2e.succeed("test -e /var/lib/librepod/update-pending")  # staged while unhealthy
+    assert pending()["phase"] == "trial"
     # The device flake keeps the old pin until the update commits.
     assert "v0.4.0" in pod_e2e.succeed("grep inputs.librepod.url /etc/nixos/flake.nix")
-    wait_reboot_from(timeout=600)  # sentinel rollback reboot
+    wait_reboot_from(timeout=600)  # the sentinel ends the trial
 
-    pod_e2e.wait_for_unit("k3s.service", timeout=600)
-    pod_e2e.wait_until_succeeds(
-        "k3s kubectl get node pod-e2e -o json"
-        " | jq -e '.status.conditions[] | select(.type==\"Ready\") | .status==\"True\"'",
-        timeout=600,
-    )
-
-    assert marker() == "v0.4.0"  # previous generation restored
+    wait_healthy()
+    assert marker() == "v0.4.0"  # the one-shot is used up: OLD again
     assert "${topPath.v0_4_0}" in pod_e2e.succeed(
         "readlink -f /nix/var/nix/profiles/system"
     )
@@ -260,6 +291,7 @@ hostPkgs.testers.runNixOSTest {
     assert status()["currentVersion"] == "v0.4.0"  # booted, not v9.9.9
     pod_e2e.succeed("test ! -e /var/lib/librepod/update-pending")
     pod_e2e.succeed("test ! -e /var/lib/librepod/staged")
+    pod_e2e.succeed("grep -qx v9.9.9 /var/lib/librepod/failed-versions")
     # Request 2 is still in the mailbox, but it was handled: a poll neither
     # retries v9.9.9 nor overwrites the result.
     pod_e2e.succeed("systemctl start librepod-updater.service")
@@ -267,14 +299,16 @@ hostPkgs.testers.runNixOSTest {
     assert status()["observedRequestId"] == 2
     assert marker() == "v0.4.0"
 
-    # ---- phase 4: stale flag (power loss mid-flow) → clear, no reboot ----
+    # ---- phase 4: power cut before the trial → clear, no reboot ----------
     from_before = pod_e2e.succeed("readlink -f /nix/var/nix/profiles/system").strip()
     pod_e2e.succeed(
-        f"jq -nc --arg from '{from_before}' --arg to v0.3.5"
-        " '{from:$from,to:$to}' > /var/lib/librepod/update-pending"
+        f"jq -nc --arg from '{from_before}' --arg to ${topPath.v9_9_2}"
+        " '{from:$from, to:$to, version:\"v9.9.2\", requestId:2, phase:\"staged\"}'"
+        " > /var/lib/librepod/update-pending"
     )
     pod_e2e.succeed("systemctl start librepod-update-sentinel.service")
     pod_e2e.succeed("test ! -e /var/lib/librepod/update-pending")
+    pod_e2e.fail("grep -qx v9.9.2 /var/lib/librepod/failed-versions")  # it never ran
     assert marker() == "v0.4.0"  # still the same generation
     assert (
         pod_e2e.succeed("readlink -f /nix/var/nix/profiles/system").strip()
@@ -282,6 +316,29 @@ hostPkgs.testers.runNixOSTest {
     )
     # machine never rebooted — uptime not reset:
     assert int(pod_e2e.succeed("cat /proc/uptime").split(".")[0]) > 30
+
+    # ---- phase 5: power cut mid-commit → the next boot finishes it -------
+    request(3, "v0.3.5")
+    stage_only()
+    # The state a cut leaves after the commit's profile switch: the one-shot
+    # used up, the profile on NEW, the boot entries still defaulting to OLD.
+    pod_e2e.succeed("bootctl set-oneshot \"\"")
+    pod_e2e.succeed("nix-env -p /nix/var/nix/profiles/system --set ${topPath.v0_3_5}")
+    pod_e2e.succeed(
+        "cd /var/lib/librepod && jq -c '.phase = \"committing\"' update-pending > p.new"
+        " && mv p.new update-pending"
+    )
+    pod_e2e.crash()
+    pod_e2e.start(allow_reboot=True)  # restarts the console log
+    # OLD boots, the sentinel finishes the commit and reboots into NEW.
+    wait_reboot_from(boots=1, timeout=900)
+    wait_healthy()
+    wait_state("done", timeout=300)
+    assert marker() == "v0.3.5"
+    assert status()["observedRequestId"] == 3
+    assert "${topPath.v0_3_5}" in boot_entry()
+    pod_e2e.succeed("jq -e '.nodes.librepod.original.ref == \"v0.3.5\"' /etc/nixos/flake.lock")
+    pod_e2e.succeed("test ! -e /var/lib/librepod/update-pending")
 
     print("updates-e2e: all scenarios passed")
   '';
