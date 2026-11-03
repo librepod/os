@@ -153,6 +153,11 @@
         inherit self nixpkgs;
       };
 
+      # Local-only (KVM): nix build .#trial-spike — bootloader mechanics of the trial boot
+      trial-spike = nixpkgs.legacyPackages.x86_64-linux.callPackage ./checks/e2e/trial-spike.nix {
+        inherit nixpkgs;
+      };
+
       # Verify all modules can be evaluated without error.
       checks.x86_64-linux =
         let
