@@ -55,7 +55,7 @@ pkgs.runCommand "updater-test"
         for dir; do :; done  # --flake DIR comes last
         ref="\$(sed -n 's/.*\(v[0-9][0-9.]*\)".*/\1/p' "\$dir/flake.nix")"
         jq -n --arg r "\$ref" '{nodes:{librepod:{original:{ref:\$r}}}}' > "\$dir/flake.lock";;
-      *" build "*) echo "$STUBS/fake-out";;
+      *" build "*) [ -z "\$FAKE_BUILD_FAIL" ] || exit 1; echo "$STUBS/fake-out";;
     esac
     EOF
     chmod +x "$STUBS/bin/nix"
@@ -94,7 +94,7 @@ pkgs.runCommand "updater-test"
     echo '{"requestId":1,"desiredVersion":"master","apply":"now"}' > "$SPEC_FILE"
     pin v0.3.5
     booted v0.3.5
-    echo '{}' > "$FLAKE/flake.lock"   # backup_pin copies it
+    echo '{}' > "$FLAKE/flake.lock"
     export LIBREPOD_FLAKE_DIR="$FLAKE" LIBREPOD_STATE_DIR="$STATE" \
            LIBREPOD_NODE_NAME="pod-test"
 
@@ -114,10 +114,12 @@ pkgs.runCommand "updater-test"
 
     bash "$UPDATER"
 
-    grep -q 'github:librepod/os/v9.9.9' "$FLAKE/flake.nix" \
-      || { echo "FAIL: flake.nix not repinned to v9.9.9"; exit 1; }
-    jq -e '.nodes.librepod.original.ref == "v9.9.9"' "$FLAKE/flake.lock" >/dev/null \
-      || { echo "FAIL: flake.lock not updated to v9.9.9"; exit 1; }
+    grep -q 'github:librepod/os/v9.9.9' "$STATE/staged/flake.nix" \
+      || { echo "FAIL: staged flake.nix not repinned to v9.9.9"; exit 1; }
+    jq -e '.nodes.librepod.original.ref == "v9.9.9"' "$STATE/staged/flake.lock" >/dev/null \
+      || { echo "FAIL: staged flake.lock not updated to v9.9.9"; exit 1; }
+    grep -q 'v0.3.5' "$FLAKE/flake.nix" \
+      || { echo "FAIL: the device flake changed before the update committed"; exit 1; }
     grep -q "nix-env -p /nix/var/nix/profiles/system --set" "$LOG" \
       || { echo "FAIL: profile not set"; exit 1; }
     grep -q "switch-to-configuration boot" "$LOG" \
@@ -134,8 +136,6 @@ pkgs.runCommand "updater-test"
       none|/*) :;;
       *) echo "FAIL: staged 'from' is not a resolved path"; exit 1;;
     esac
-    test -f "$STATE/flake.nix.bak" && test -f "$STATE/flake.lock.bak" \
-      || { echo "FAIL: pin backup not staged for sentinel rollback"; exit 1; }
     # v1 has no live switch:
     ! grep -q "switch-to-configuration switch" "$LOG" \
       || { echo "FAIL: live switch attempted (v1 is boot+reboot only)"; exit 1; }
@@ -150,7 +150,7 @@ pkgs.runCommand "updater-test"
 
     bash "$UPDATER"
 
-    grep -q 'v0.3.5' "$FLAKE/flake.nix" \
+    ! grep -q "systemctl reboot" "$LOG" \
       || { echo "FAIL: unattended downgrade was applied"; exit 1; }
 
     # ---- scenario 4: window crossing midnight -------------------------------
@@ -158,14 +158,14 @@ pkgs.runCommand "updater-test"
     echo '{"requestId":4,"desiredVersion":"v9.9.9","policy":{"unattended":true,"window":"22:00-06:00"}}' > "$SPEC_FILE"
 
     FAKE_HOUR=12 bash "$UPDATER"
-    grep -q 'v0.3.5' "$FLAKE/flake.nix" \
+    ! grep -q "systemctl reboot" "$LOG" \
       || { echo "FAIL: update applied outside the window"; exit 1; }
 
     pin v0.3.5
     booted v0.3.5
     rm -f "$STATE/update-pending"
     FAKE_HOUR=23 bash "$UPDATER"   # same request 4: waiting did not use it up
-    grep -q 'github:librepod/os/v9.9.9' "$FLAKE/flake.nix" \
+    grep -q 'github:librepod/os/v9.9.9' "$STATE/staged/flake.nix" \
       || { echo "FAIL: update not applied inside a midnight-wrapping window"; exit 1; }
 
     # ---- scenario 5: custom URI prefix (E2E uses git+file) ------------------
@@ -178,7 +178,7 @@ pkgs.runCommand "updater-test"
 
     bash "$UPDATER"
 
-    grep -q 'git+file:///srv/os?ref=v9.9.9' "$FLAKE/flake.nix" \
+    grep -q 'git+file:///srv/os?ref=v9.9.9' "$STATE/staged/flake.nix" \
       || { echo "FAIL: custom URI prefix not repinned"; exit 1; }
     unset LIBREPOD_URI_PREFIX
 
@@ -271,6 +271,25 @@ pkgs.runCommand "updater-test"
     bash "$UPDATER"
     grep -q "systemctl reboot" "$LOG" \
       || { echo "FAIL: the owner's new request did not retry the failed version"; exit 1; }
+    rm -f "$STATE/update-pending"
+
+    # ---- scenario 13: a failed build leaves the device flake untouched ------
+    : > "$LOG"
+    pin v0.3.5
+    before="$(sha256sum "$FLAKE"/*)"
+    export SPEC_FILE="$STUBS/spec-fail.json"
+    echo '{"requestId":10,"desiredVersion":"v9.9.9","apply":"now"}' > "$SPEC_FILE"
+    FAKE_BUILD_FAIL=1 bash "$UPDATER" || true
+    [ "$(sha256sum "$FLAKE"/*)" = "$before" ] \
+      || { echo "FAIL: a failed build changed the device flake"; exit 1; }
+    grep -qF 'state\": \"failed' "$LOG" \
+      || { echo "FAIL: the failed build was not reported"; exit 1; }
+    # The owner asks again: the device builds again, not "already on v9.9.9".
+    : > "$LOG"
+    echo '{"requestId":11,"desiredVersion":"v9.9.9","apply":"now"}' > "$SPEC_FILE"
+    bash "$UPDATER"
+    ! grep -q "already on" "$LOG" && grep -q "systemctl reboot" "$LOG" \
+      || { echo "FAIL: the poll after a failed build claimed up to date"; exit 1; }
     rm -f "$STATE/update-pending"
 
     echo "updater scenarios passed"

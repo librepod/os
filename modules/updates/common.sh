@@ -14,6 +14,9 @@ NIX_ENV_BIN="${NIX_ENV_BIN:-nix-env}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 PROFILE="${LIBREPOD_PROFILE:-/nix/var/nix/profiles/system}"
 RELEASE_FILE="${LIBREPOD_RELEASE_FILE:-/run/current-system/etc/librepod-release}"
+# The updater repins and builds in this copy of FLAKE_DIR; the sentinel
+# copies the pin back only when the update commits.
+STAGED="$STATE_DIR/staged"
 
 # shellcheck disable=SC2086  # KUBECTL may be multiple words ("k3s kubectl")
 kctl() { $KUBECTL "$@"; }
@@ -35,20 +38,4 @@ report() { # state, detail — best-effort telemetry; cv from the booted system
   kctl -n "$NS" patch configmap "$NODE_NAME" --type merge \
     -p "$(jq -n --arg s "$json" '{data:{"status.json":$s}}')" >/dev/null 2>&1 || true
   echo "[librepod][$1] $2"
-}
-
-# Pin backup/restore: the updater snapshots the flake before repinning; the
-# sentinel restores it on rollback — the lock must never claim a version the
-# device isn't running (it would mask DESIRED==CURRENT as "up to date").
-backup_pin() {
-  mkdir -p "$STATE_DIR"
-  cp "$FLAKE_DIR/flake.nix" "$STATE_DIR/flake.nix.bak"
-  cp "$FLAKE_DIR/flake.lock" "$STATE_DIR/flake.lock.bak"
-}
-
-restore_pin() { # best-effort; the profile switch is the critical action
-  local f
-  for f in flake.nix flake.lock; do
-    if [ -f "$STATE_DIR/$f.bak" ]; then mv "$STATE_DIR/$f.bak" "$FLAKE_DIR/$f" || true; fi
-  done
 }

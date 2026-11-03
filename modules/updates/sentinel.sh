@@ -32,13 +32,11 @@ healthy() {
 }
 
 # Stale flag: profile unchanged since staging (power loss mid-flow) — the
-# reboot never landed, nothing to verify or roll back. Restore the pin: the
-# lock may claim a version that never booted.
+# reboot never landed, nothing to verify or roll back.
 # -f: profile symlinks are relative generation links (system-N-link)
 CURRENT="$(readlink -f "$PROFILE" || true)"
 if [ -n "$CURRENT" ] && [ "$CURRENT" = "$FROM" ]; then
-  rm -f "$PENDING"
-  restore_pin
+  rm -rf "$PENDING" "$STAGED"
   report idle "stale sentinel flag cleared (update never landed)"
   exit 0
 fi
@@ -65,14 +63,10 @@ while :; do
         # Stash the intent: the report below goes through kubectl, which is
         # down on the broken generation — the post-rollback boot resends it.
         cp "$PENDING" "$STASH"
-        # Revert the pin before reporting: report reads the restored lock, and
-        # the next updater poll sees DESIRED != CURRENT instead of masking
-        # this rollback as "up to date".
-        restore_pin
         report rolled_back "health check failed — rolling back to $FROM"
         "$NIX_ENV_BIN" -p "$PROFILE" --set "$FROM"
         "$FROM/bin/switch-to-configuration" boot
-        rm -f "$PENDING"
+        rm -rf "$PENDING" "$STAGED"
         "$SYSTEMCTL" reboot
         exit 0
       else
@@ -86,7 +80,12 @@ while :; do
 done
 
 # ---- commit -----------------------------------------------------------------
-rm -f "$PENDING" "$STASH" "$STATE_DIR"/flake.nix.bak "$STATE_DIR"/flake.lock.bak
+# Only now does FLAKE_DIR take the new pin. Write-then-rename, so a power cut
+# never leaves a half-written file.
+for f in flake.nix flake.lock; do
+  cp "$STAGED/$f" "$FLAKE_DIR/.$f.new" && mv -f "$FLAKE_DIR/.$f.new" "$FLAKE_DIR/$f"
+done
+rm -rf "$PENDING" "$STASH" "$STAGED"
 # Label from $TO directly (the lock may be unreadable here); if this call is
 # dropped, the updater's next-poll reconcile_label heals it.
 kctl label node "$NODE_NAME" "librepod.os/version=$TO" --overwrite >/dev/null 2>&1 || true

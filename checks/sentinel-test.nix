@@ -68,12 +68,20 @@ pkgs.runCommand "sentinel-test"
            LIBREPOD_HEALTH_TIMEOUT=0 LIBREPOD_HEALTH_STABLE=0 LIBREPOD_POLL_INTERVAL=0 \
            LIBREPOD_PROFILE="$ROOT/profiles/system"
 
+    # The device flake on the old pin, and the updater's staged copy on the new.
+    reset_flake() { printf 'old-pin\n' > "$ROOT/flake/flake.nix"; printf 'old-lock\n' > "$ROOT/flake/flake.lock"; }
+    stage() {
+      mkdir -p "$ROOT/state/staged"
+      printf 'new-pin\n' > "$ROOT/state/staged/flake.nix"
+      printf 'new-lock\n' > "$ROOT/state/staged/flake.lock"
+    }
+    reset_flake
+
     # ---- scenario 1: healthy → label + done ---------------------------------
     export HEALTH_FILE="$ROOT/health"
     echo "True" > "$ROOT/health"   # node Ready condition status
     echo "{\"from\":\"$ROOT/profiles/prev\",\"to\":\"v9.9.9\"}" > "$ROOT/state/update-pending"
-    echo old-pin > "$ROOT/state/flake.nix.bak"
-    echo old-lock > "$ROOT/state/flake.lock.bak"
+    stage   # the updater's staged copy, repinned
     echo 7 > "$ROOT/state/request-id"   # the updater recorded the request
     bash "$SENTINEL"
     grep -qF 'observedRequestId\": 7' "$CALLS_LOG" \
@@ -82,18 +90,18 @@ pkgs.runCommand "sentinel-test"
       || { echo "FAIL: success label missing"; exit 1; }
     test ! -e "$ROOT/state/update-pending" \
       || { echo "FAIL: flag not cleared on success"; exit 1; }
-    test ! -e "$ROOT/state/flake.nix.bak" && test ! -e "$ROOT/state/flake.lock.bak" \
-      || { echo "FAIL: pin backup not cleared on commit"; exit 1; }
+    [ "$(cat "$ROOT/flake/flake.nix" "$ROOT/flake/flake.lock")" = "$(printf 'new-pin\nnew-lock')" ] \
+      || { echo "FAIL: commit did not take the staged pin"; exit 1; }
+    test ! -e "$ROOT/state/staged" \
+      || { echo "FAIL: staged copy not cleared on commit"; exit 1; }
 
     # ---- scenario 2: unhealthy → rollback + reboot ----------------------------
     : > "$CALLS_LOG"
     echo "NotReady" > "$ROOT/health"
     echo "{\"from\":\"$ROOT/profiles/prev\",\"to\":\"v9.9.9\"}" > "$ROOT/state/update-pending"
     ln -sfn new "$ROOT/profiles/system"
-    echo old-pin > "$ROOT/state/flake.nix.bak"
-    echo old-lock > "$ROOT/state/flake.lock.bak"
-    echo new-pin > "$ROOT/flake/flake.nix"
-    echo new-lock > "$ROOT/flake/flake.lock"
+    reset_flake
+    stage
     cat > "$ROOT/profiles/prev/bin/switch-to-configuration" <<EOF
     #!/bin/sh
     echo "prev-s2c \$*" >> "$CALLS_LOG"
@@ -109,7 +117,9 @@ pkgs.runCommand "sentinel-test"
     test ! -e "$ROOT/state/update-pending" \
       || { echo "FAIL: flag not cleared on rollback"; exit 1; }
     [ "$(cat "$ROOT/flake/flake.lock")" = "old-lock" ] \
-      || { echo "FAIL: rollback left the lock claiming the failed version"; exit 1; }
+      || { echo "FAIL: rollback changed the device flake"; exit 1; }
+    test ! -e "$ROOT/state/staged" \
+      || { echo "FAIL: staged copy not cleared on rollback"; exit 1; }
     grep -qx v9.9.9 "$ROOT/state/failed-versions" \
       || { echo "FAIL: rolled-back version not recorded as failed"; exit 1; }
 
@@ -117,17 +127,17 @@ pkgs.runCommand "sentinel-test"
     : > "$CALLS_LOG"
     echo "{\"from\":\"$ROOT/profiles/prev\",\"to\":\"v0.3.5\"}" > "$ROOT/state/update-pending"
     ln -sfn prev "$ROOT/profiles/system"   # current == from → stale
-    echo old-pin > "$ROOT/state/flake.nix.bak"
-    echo old-lock > "$ROOT/state/flake.lock.bak"
-    echo new-pin > "$ROOT/flake/flake.nix"
-    echo new-lock > "$ROOT/flake/flake.lock"
+    reset_flake
+    stage
     bash "$SENTINEL"
     test ! -e "$ROOT/state/update-pending" \
       || { echo "FAIL: stale flag not cleared"; exit 1; }
     ! grep -q "systemctl reboot" "$CALLS_LOG" \
       || { echo "FAIL: stale flag triggered reboot"; exit 1; }
     [ "$(cat "$ROOT/flake/flake.nix")" = "old-pin" ] \
-      || { echo "FAIL: stale clear left the lock claiming an unbooted version"; exit 1; }
+      || { echo "FAIL: stale clear changed the device flake"; exit 1; }
+    test ! -e "$ROOT/state/staged" \
+      || { echo "FAIL: staged copy not cleared on a stale flag"; exit 1; }
 
     # ---- scenario 4: rollback status survives k3s being down ----------------
     # The report goes through kubectl, which is dead on the broken gen —

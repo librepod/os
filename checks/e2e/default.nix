@@ -224,8 +224,7 @@ hostPkgs.testers.runNixOSTest {
     assert node_label() == "v0.4.0"
     assert "${topPath.v0_4_0}" in pod_e2e.succeed("readlink -f /nix/var/nix/profiles/system")
     pod_e2e.succeed("test ! -e /var/lib/librepod/update-pending")
-    pod_e2e.succeed("test ! -e /var/lib/librepod/flake.nix.bak")
-    pod_e2e.succeed("test ! -e /var/lib/librepod/flake.lock.bak")
+    pod_e2e.succeed("test ! -e /var/lib/librepod/staged")
     assert "v0.4.0" in pod_e2e.succeed("grep inputs.librepod.url /etc/nixos/flake.nix")
 
     # ---- phase 3: broken release v9.9.9 → auto-rollback ------------------
@@ -238,6 +237,8 @@ hostPkgs.testers.runNixOSTest {
     )
     pod_e2e.fail("systemctl is-active --quiet k3s")
     pod_e2e.succeed("test -e /var/lib/librepod/update-pending")  # staged while unhealthy
+    # The device flake keeps the old pin until the update commits.
+    assert "v0.4.0" in pod_e2e.succeed("grep inputs.librepod.url /etc/nixos/flake.nix")
     wait_reboot_from(timeout=600)  # sentinel rollback reboot
 
     pod_e2e.wait_for_unit("k3s.service", timeout=600)
@@ -258,6 +259,7 @@ hostPkgs.testers.runNixOSTest {
     wait_state("rolled_back", timeout=300)
     assert status()["currentVersion"] == "v0.4.0"  # booted, not v9.9.9
     pod_e2e.succeed("test ! -e /var/lib/librepod/update-pending")
+    pod_e2e.succeed("test ! -e /var/lib/librepod/staged")
     # Request 2 is still in the mailbox, but it was handled: a poll neither
     # retries v9.9.9 nor overwrites the result.
     pod_e2e.succeed("systemctl start librepod-updater.service")

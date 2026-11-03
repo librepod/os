@@ -97,20 +97,22 @@ else
   fi
 fi
 
-# ---- 3. repin ----------------------------------------------------------------
+# ---- 3. repin, in the staged copy: FLAKE_DIR changes only at commit ---------
 handled   # from here on a failed build or rollback never retries it by itself
 report building "repinning to $DESIRED"
-backup_pin   # sentinel restores this on rollback or stale-flag clear
-if ! grep -q "inputs\\.librepod\\.url = \"${URI_PREFIX}v[0-9.]*\"" "$FLAKE_DIR/flake.nix"; then
+rm -rf "$STAGED"
+# Contents, not the dir: were FLAKE_DIR a symlink, sed would edit the original.
+{ mkdir "$STAGED" && cp -a "$FLAKE_DIR/." "$STAGED/"; } || die "could not copy $FLAKE_DIR"
+if ! grep -q "inputs\\.librepod\\.url = \"${URI_PREFIX}v[0-9.]*\"" "$STAGED/flake.nix"; then
   die "pin line not found in $FLAKE_DIR/flake.nix — refusing to edit unknown file"
 fi
-sed -i "s|${URI_PREFIX}v[0-9.]*|${URI_PREFIX}${DESIRED}|" "$FLAKE_DIR/flake.nix"
-"$NIX_BIN" flake update librepod --flake "$FLAKE_DIR" >/dev/null \
+sed -i "s|${URI_PREFIX}v[0-9.]*|${URI_PREFIX}${DESIRED}|" "$STAGED/flake.nix"
+"$NIX_BIN" flake update librepod --flake "$STAGED" >/dev/null \
   || die "nix flake update failed for $DESIRED"
 
 # ---- 4. apply (clan activation sequence; no live switch in v1) ---------------
 OUT="$("$NIX_BIN" build --no-link --print-out-paths \
-  "$FLAKE_DIR#nixosConfigurations.$NODE_NAME.config.system.build.toplevel" 2>/dev/null)" \
+  "$STAGED#nixosConfigurations.$NODE_NAME.config.system.build.toplevel" 2>/dev/null)" \
   || die "build failed for $DESIRED"
 
 [ -e "$OUT/nixos-version" ] || die "build output missing nixos-version — refusing to activate"
