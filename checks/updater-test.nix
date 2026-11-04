@@ -62,6 +62,8 @@ pkgs.runCommand "updater-test"
     # stub k3s: `k3s kubectl ...` — logs and fakes kubectl
     echo "k3s $*" >> "$CALLS_LOG"
     case "$*" in
+      # killed (TimeoutStartSec, a cut) just as it reports `building`
+      *"patch"*building*) [ -z "$FAKE_KILL_AT_BUILDING" ] || kill -9 $PPID;;
       *"get node"*) echo "True";;
       *"get configmap"*) cat "$SPEC_FILE" 2>/dev/null || true;;
       *"create"*|*"patch"*|*"label"*) exit 0;;
@@ -86,6 +88,10 @@ pkgs.runCommand "updater-test"
     cat > "$STUBS/bin/nix-env" <<EOF
     #!/bin/sh
     echo "nix-env \$*" >> "$CALLS_LOG"
+    # ENOSPC, once, on the profile write that sets FAKE_SET_FAIL
+    if [ -n "\$FAKE_SET_FAIL" ] && [ "\$4" = "\$FAKE_SET_FAIL" ] && ! [ -e "$STUBS/set-failed" ]; then
+      touch "$STUBS/set-failed"; exit 1
+    fi
     EOF
     chmod +x "$STUBS/bin/nix-env"
 
@@ -142,6 +148,8 @@ pkgs.runCommand "updater-test"
       || { echo "FAIL: staged flake.nix not repinned to v9.9.9"; exit 1; }
     jq -e '.nodes.librepod.original.ref == "v9.9.9"' "$STATE/staged/flake.lock" >/dev/null \
       || { echo "FAIL: staged flake.lock not updated to v9.9.9"; exit 1; }
+    grep -qF -- "--out-link $STATE/staged/result" "$LOG" \
+      || { echo "FAIL: NEW not rooted until it has a profile generation"; exit 1; }
     grep -q 'v0.3.5' "$FLAKE/flake.nix" \
       || { echo "FAIL: the device flake changed before the update committed"; exit 1; }
     # The trial: NEW gets an entry, OLD stays the profile and the default,
@@ -379,6 +387,27 @@ pkgs.runCommand "updater-test"
       || { echo "FAIL: a trial whose sentinel failed was not ended"; exit 1; }
     jq -e '.phase == "trial" and .reason == "sentinel-failed"' "$STATE/update-pending" >/dev/null \
       || { echo "FAIL: the OLD boot needs update-pending and the reason"; exit 1; }
+
+    # ---- scenario 19: the trial setup fails after NEW's --set → profile on OLD
+    : > "$LOG"
+    rm -rf "$STATE/update-pending" "$STATE/staged"
+    echo '{"requestId":16,"desiredVersion":"v9.9.9","apply":"now"}' > "$SPEC_FILE"
+    FAKE_SET_FAIL="$STUBS/old-system" bash "$UPDATER" || true
+    [ -e "$STUBS/set-failed" ] && [ "$(grep -c -- "--set $STUBS/old-system" "$LOG")" = 2 ] \
+      || { echo "FAIL: the profile was left on NEW"; exit 1; }
+    test ! -e "$STATE/update-pending" && grep -qF 'state\": \"failed' "$LOG" \
+      || { echo "FAIL: the failed trial setup was not reported"; exit 1; }
+
+    # ---- scenario 20: killed as the build starts → failed, not lost ---------
+    : > "$LOG"
+    echo '{"requestId":17,"desiredVersion":"v9.9.9","apply":"now"}' > "$SPEC_FILE"
+    FAKE_KILL_AT_BUILDING=1 bash "$UPDATER" || true
+    [ "$(cat "$STATE/request-id")" = 17 ] && ! grep -q "nix build" "$LOG" \
+      || { echo "FAIL: the kill did not land between handled and the build"; exit 1; }
+    : > "$LOG"
+    bash "$UPDATER"
+    grep -qF 'state\": \"failed' "$LOG" && grep -qF 'observedRequestId\": 17' "$LOG" \
+      || { echo "FAIL: request 17 was used up with no final state"; exit 1; }
 
     echo "updater scenarios passed"
     touch $out

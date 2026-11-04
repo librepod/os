@@ -34,6 +34,8 @@ pkgs.runCommand "sentinel-test"
       cat > "$ROOT/$sys/bin/switch-to-configuration" <<EOF
     #!/bin/sh
     echo "$sys switch-to-configuration \$*" >> "$CALLS_LOG"
+    # the boot loader takes no writes (ESP full) for the systems in FAKE_STC_FAIL
+    case " \$FAKE_STC_FAIL " in *" $sys "*) exit 1;; esac
     EOF
       chmod +x "$ROOT/$sys/bin/switch-to-configuration"
     done
@@ -205,6 +207,33 @@ pkgs.runCommand "sentinel-test"
     bash "$SENTINEL"
     grep -qF 'state\": \"rolled_back' "$CALLS_LOG" && grep -qF '(update-source-unreachable)' "$CALLS_LOG" \
       || { echo "FAIL: rolled_back detail does not name update-source-unreachable"; exit 1; }
+
+    # ---- scenario 7: the commit can't write NEW's entries → OLD again -------
+    boot new trial
+    FAKE_STC_FAIL=new bash "$SENTINEL"
+    grep -qx "nix-env -p $ROOT/profile --set $ROOT/old" "$CALLS_LOG" \
+      && grep -qx "old switch-to-configuration boot" "$CALLS_LOG" \
+      || { echo "FAIL: OLD not made the default again"; exit 1; }
+    grep -q "systemctl reboot" "$CALLS_LOG" \
+      || { echo "FAIL: a trial that could not commit did not end"; exit 1; }
+    jq -e '.phase == "trial" and .reason == "commit-failed"' "$ROOT/state/update-pending" >/dev/null \
+      || { echo "FAIL: the OLD boot needs update-pending and the reason"; exit 1; }
+    flake_untouched
+    : > "$CALLS_LOG"
+    ln -sfn old "$ROOT/current-system"
+    bash "$SENTINEL"
+    grep -qF '(commit-failed)' "$CALLS_LOG" && grep -qx v9.9.9 "$ROOT/state/failed-versions" \
+      || { echo "FAIL: the OLD boot did not report commit-failed"; exit 1; }
+
+    # ---- scenario 8: no entries can be written at all → failed, no reboot --
+    boot new trial
+    if FAKE_STC_FAIL="new old" bash "$SENTINEL"; then
+      echo "FAIL: a commit with no boot entries written exited 0"; exit 1
+    fi
+    grep -qF 'state\": \"failed' "$CALLS_LOG" && ! grep -q "systemctl reboot" "$CALLS_LOG" \
+      || { echo "FAIL: not reported as failed, or rebooted into an unknown default"; exit 1; }
+    jq -e '.phase == "committing"' "$ROOT/state/update-pending" >/dev/null \
+      || { echo "FAIL: the next boot can't retry the commit"; exit 1; }
 
     echo "sentinel scenarios passed"
     touch $out

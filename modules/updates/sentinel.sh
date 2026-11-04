@@ -9,6 +9,7 @@ INTERVAL="${LIBREPOD_POLL_INTERVAL:-15}"
 
 [ -f "$PENDING" ] || exit 0
 
+FROM="$(jq -r '.from // empty' "$PENDING")"
 TO="$(jq -r '.to // empty' "$PENDING")"
 VERSION="$(jq -r '.version // empty' "$PENDING")"
 PHASE="$(jq -r '.phase // empty' "$PENDING")"
@@ -20,12 +21,23 @@ healthy() {
     && [ "$(kctl get node "$NODE_NAME" -o 'jsonpath={.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" = "True" ]
 }
 
+# A commit that can't write the boot entries (ESP full, a vfat write error)
+# would fail the same way on every boot: make OLD the default again and end
+# the trial like a failed one.
+abort_commit() {
+  { "$NIX_ENV_BIN" -p "$PROFILE" --set "$FROM" && "$FROM/bin/switch-to-configuration" boot; } \
+    || { report failed "could not write the boot entries for $VERSION, nor put the old ones back"; exit 1; }
+  write_pending "$(jq -c '.phase = "trial" | .reason = "commit-failed"' "$PENDING")"
+  "$SYSTEMCTL" reboot
+  exit 0
+}
+
 # Every step is safe to repeat: after a power cut the next boot runs it all
 # again. Boot counting (GitHub #17) replaces only this.
 commit_trial() {
   set_phase committing
-  "$NIX_ENV_BIN" -p "$PROFILE" --set "$TO"
-  "$TO/bin/switch-to-configuration" boot
+  { "$NIX_ENV_BIN" -p "$PROFILE" --set "$TO" && "$TO/bin/switch-to-configuration" boot; } \
+    || abort_commit
   # Only now does FLAKE_DIR take the new pin. Write-then-rename, so a power
   # cut never leaves a half-written file.
   if [ -d "$STAGED" ]; then
@@ -66,7 +78,7 @@ if [ "$BOOTED" != "$TO" ]; then
   else
     # A power cut before the trial boot: nothing ran, so nothing failed. A cut
     # inside start_trial can leave the profile on NEW; FROM is the boot default.
-    "$NIX_ENV_BIN" -p "$PROFILE" --set "$(jq -r '.from' "$PENDING")"
+    "$NIX_ENV_BIN" -p "$PROFILE" --set "$FROM"
     report idle "update to $VERSION never started; cleared"
   fi
   # Staged copy first: the updater reads one without update-pending as a build

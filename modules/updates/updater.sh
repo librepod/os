@@ -112,11 +112,14 @@ if [ "$APPLY" != "now" ]; then
 fi
 
 # ---- 3. repin, in the staged copy: FLAKE_DIR changes only at commit ---------
+# The staged copy comes before `handled`: a kill or a cut after it leaves the
+# copy, and the next poll reports the request failed instead of losing it.
+rm -rf "$STAGED"
+mkdir "$STAGED"
 handled   # from here on a failed build or rollback never retries it by itself
 report building "repinning to $DESIRED"
-rm -rf "$STAGED"
 # Contents, not the dir: were FLAKE_DIR a symlink, sed would edit the original.
-{ mkdir "$STAGED" && cp -a "$FLAKE_DIR/." "$STAGED/"; } || die "could not copy $FLAKE_DIR"
+cp -a "$FLAKE_DIR/." "$STAGED/" || die "could not copy $FLAKE_DIR"
 if ! grep -q "inputs\\.librepod\\.url = \"${URI_PREFIX}v[0-9.]*\"" "$STAGED/flake.nix"; then
   die "pin line not found in $FLAKE_DIR/flake.nix — refusing to edit unknown file"
 fi
@@ -141,7 +144,9 @@ start_trial() { # old toplevel, new toplevel
 }
 
 # ---- 4. build (no live switch) -------------------------------------------------
-OUT="$("$NIX_BIN" build --no-link --print-out-paths \
+# The out-link is NEW's GC root until start_trial gives it a profile generation;
+# it goes with the staged copy.
+OUT="$("$NIX_BIN" build --out-link "$STAGED/result" --print-out-paths \
   "$STAGED#nixosConfigurations.$NODE_NAME.config.system.build.toplevel")" \
   || die "build failed for $DESIRED"
 
@@ -151,7 +156,12 @@ OUT="$("$NIX_BIN" build --no-link --print-out-paths \
 FROM="$(readlink -f "$CURRENT_SYSTEM")"
 write_pending "$(jq -nc --arg from "$FROM" --arg to "$OUT" --arg v "$DESIRED" --argjson rid "$REQ" \
   '{from:$from, to:$to, version:$v, requestId:$rid, phase:"staged", stagedAt:(now|todate)}')"
-start_trial "$FROM" "$OUT" || { rm -f "$PENDING"; die "could not set up the trial boot of $DESIRED"; }
+# The profile may be left on NEW (the second --set failed): FROM again, which
+# is a no-op when it already names FROM.
+start_trial "$FROM" "$OUT" || {
+  "$NIX_ENV_BIN" -p "$PROFILE" --set "$FROM" || true
+  rm -f "$PENDING"; die "could not set up the trial boot of $DESIRED"
+}
 set_phase trial
 report verifying "rebooting into $DESIRED once; it stays only if healthy"
 "$SYSTEMCTL" reboot
