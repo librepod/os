@@ -40,7 +40,7 @@ nix fmt -- --check
 
 ### Device Profiles
 
-Device profiles in `devices/` aggregate modules via `imports`. Each device provides `boot.nix` (bootloader/kernel), `hardware-configuration.nix` (generated), and `default.nix` (module composition). Some modules require explicit `import` with arguments (e.g., `k3s` and `common` need `{ inherit config pkgs lib; }`).
+A device is `lib.mkDevice { name, version, device, modules }`: the shared base stack (`applianceModules` in `flake.nix`, which the E2E VM runs too), plus a hardware profile from `hw/<name>/` (boot loader, kernel, hardware facts) or any module path, plus the device's own modules (install-day facts like the disk layout and `stateVersion`, then identity). `librepod-install` (`pkgs/librepod-install`) writes the device flake in `/etc/nixos` that calls it; the updater repins that flake's `librepod` input.
 
 ## Nix Style
 
