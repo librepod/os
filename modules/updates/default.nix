@@ -45,6 +45,7 @@ in
         "k3s.service"
       ];
       wants = [ "network-online.target" ];
+      environment.LIBREPOD_STATE_DIR = stateDir;
       serviceConfig = {
         Type = "oneshot";
         ExecStart = "${updater}/bin/librepod-updater";
@@ -74,6 +75,7 @@ in
         "k3s.service"
       ];
       wants = [ "network-online.target" ];
+      environment.LIBREPOD_STATE_DIR = stateDir;
       unitConfig.ConditionPathExists = "${stateDir}/update-pending";
       serviceConfig = {
         Type = "oneshot";
@@ -81,13 +83,6 @@ in
         # 15 min health budget + slack; the script also self-limits.
         TimeoutStartSec = "25min";
       };
-    };
-
-    # Appliance GC: keep ~a month of generations for rollback; identity may override.
-    nix.gc = lib.mkDefault {
-      automatic = true;
-      dates = "weekly";
-      options = "--delete-older-than 30d";
     };
   };
 }
