@@ -53,9 +53,10 @@ in
     enable = true;
     role = "server";
     package = pkgs.k3s;
-    # Disabling local-storage since we are going to use nfs and nfs-provisioner
-    # Disabling traefik since we are going to deploy and configure it with argocd
-    extraFlags = "--disable=local-storage --disable=traefik";
+    # The marketplace deploys its own traefik. local-storage is turned off by
+    # the storage module in use (modules/nfs), not here: swapping storage then
+    # takes its k3s side along.
+    disable = [ "traefik" ];
     # Allow unsafe sysctls needed for WireGuard and other networking workloads
     # net.ipv4.conf.all.src_valid_mark: Required for WireGuard packet marking
     # See here https://kubernetes.io/docs/reference/config-api/kubelet-config.v1beta1/

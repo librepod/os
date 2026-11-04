@@ -50,6 +50,9 @@
         self.nixosModules.users
         self.nixosModules.usb-automount
         self.nixosModules.k3s
+        # PV storage — the one place to swap it; the module also turns off
+        # k3s's built-in local-storage
+        self.nixosModules.nfs
         self.nixosModules.updates
       ];
     in
