@@ -20,18 +20,11 @@ let
   # the device flake so both evals stay identical.
   instrPath = toString nixpkgs + "/nixos/modules/testing/test-instrumentation.nix";
 
-  # Test-only knobs; the scripts read these env vars.
-  sentinelEnv = {
-    LIBREPOD_URI_PREFIX = "git+file:///srv/os?ref="; # the fetch check
-    LIBREPOD_HEALTH_TIMEOUT = "90";
-    LIBREPOD_HEALTH_STABLE = "20";
-    LIBREPOD_POLL_INTERVAL = "5";
-  };
-
   e2eNode = {
     imports = self.lib.applianceModules ++ [
       ./hw-vm.nix
       ../stub-identity.nix
+      ./test-env.nix # the same test-only service env as every device generation
     ];
     networking.hostName = "pod-e2e";
     # mkDevice's tail module — applianceModules stops at the base stack.
@@ -66,9 +59,6 @@ let
     ]
     ++ releases.ifdSeeds
     ++ builtins.attrValues top;
-
-    systemd.services.librepod-update-sentinel.environment = sentinelEnv;
-    systemd.services.librepod-updater.environment.LIBREPOD_URI_PREFIX = "git+file:///srv/os?ref=";
 
     # The test drives nix, git (git+file fetch), and jq directly.
     environment.systemPackages = with hostPkgs; [
@@ -131,6 +121,7 @@ hostPkgs.testers.runNixOSTest {
         else:
             raise Exception("reboot did not happen within timeout")
         time.sleep(10)  # let the guest settle before reclaiming the shell
+        deadline = time.time() + timeout  # its own budget: the boot may have come late
         while time.time() < deadline:
             try:
                 pod_e2e.connected = False
@@ -317,6 +308,8 @@ hostPkgs.testers.runNixOSTest {
 
     # ---- phase 4: power cut before the trial → clear, no reboot ----------
     from_before = pod_e2e.succeed("readlink -f /nix/var/nix/profiles/system").strip()
+    # The cut came inside start_trial, between its two profile switches.
+    pod_e2e.succeed("nix-env -p /nix/var/nix/profiles/system --set ${topPath.v9_9_2}")
     pod_e2e.succeed(
         f"jq -nc --arg from '{from_before}' --arg to ${topPath.v9_9_2}"
         " '{from:$from, to:$to, version:\"v9.9.2\", requestId:2, phase:\"staged\"}'"
