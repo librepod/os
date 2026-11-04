@@ -2,12 +2,22 @@
 # Exercises modules/updates/updater.sh end-to-end with stubbed nix/kubectl.
 { pkgs }:
 
+let
+  # The package modules/updates ships; the stubs below stand in for nix, k3s
+  # and systemd.
+  inherit
+    (import ../modules/updates/scripts.nix {
+      inherit (pkgs) writeShellApplication;
+      runtimeInputs = [ pkgs.jq ];
+    })
+    updater
+    ;
+in
 pkgs.runCommand "updater-test"
   {
     buildInputs = with pkgs; [
       bash
       jq
-      shellcheck
     ];
   }
   ''
@@ -18,11 +28,7 @@ pkgs.runCommand "updater-test"
     FLAKE="$STUBS/flake"
     STATE="$STUBS/state"
 
-    # Same concatenation modules/updates/default.nix ships.
-    UPDATER="$STUBS/updater"
-    # with the errexit/nounset/pipefail writeShellApplication adds
-    { printf '#!/usr/bin/env bash\nset -euo pipefail\n'; cat "${../modules/updates/common.sh}" "${../modules/updates/updater.sh}"; } > "$UPDATER"
-    shellcheck "$UPDATER"   # writeShellApplication runs it at build time too
+    UPDATER="${updater}/bin/librepod-updater"
 
     # ---- stubs -------------------------------------------------------------
     mkdir -p "$STUBS/bin" "$STUBS/fake-out/bin" "$STUBS/old-system/bin" "$FLAKE" "$STATE"
@@ -87,6 +93,7 @@ pkgs.runCommand "updater-test"
     #!/bin/sh
     echo "systemctl \$*" >> "$CALLS_LOG"
     # never actually reboot in tests
+    if [ "\$1" = is-active ]; then echo "\''${FAKE_SENTINEL:-activating}"; fi
     EOF
     chmod +x "$STUBS/bin/systemctl"
 
@@ -94,7 +101,7 @@ pkgs.runCommand "updater-test"
     REAL_DATE="$(command -v date)"
     cat > "$STUBS/bin/date" <<EOF
     #!/bin/sh
-    if [ "\$*" = "+%H" ]; then echo "\$FAKE_HOUR"; exit 0; fi
+    if [ "\$*" = "+%H%M" ]; then echo "\$FAKE_TIME"; exit 0; fi
     exec "$REAL_DATE" "\$@"
     EOF
     chmod +x "$STUBS/bin/date"
@@ -163,7 +170,7 @@ pkgs.runCommand "updater-test"
     echo '{"requestId":3,"desiredVersion":"v0.1.0","apply":"now"}' > "$SPEC_FILE"
     pin v0.3.5
     booted v0.3.5
-    rm -f "$STATE/update-pending"
+    rm -rf "$STATE/update-pending" "$STATE/staged"
 
     bash "$UPDATER"
 
@@ -176,16 +183,16 @@ pkgs.runCommand "updater-test"
 
     # ---- scenario 4: window crossing midnight -------------------------------
     export SPEC_FILE="$STUBS/spec-win.json"
-    echo '{"requestId":4,"desiredVersion":"v9.9.9","policy":{"unattended":true,"window":"22:00-06:00"}}' > "$SPEC_FILE"
+    echo '{"requestId":4,"desiredVersion":"v9.9.9","policy":{"unattended":true,"window":"22:30-06:00"}}' > "$SPEC_FILE"
 
-    FAKE_HOUR=12 bash "$UPDATER"
+    FAKE_TIME=2215 bash "$UPDATER"   # minutes count
     ! grep -q "systemctl reboot" "$LOG" \
       || { echo "FAIL: update applied outside the window"; exit 1; }
 
     pin v0.3.5
     booted v0.3.5
-    rm -f "$STATE/update-pending"
-    FAKE_HOUR=23 bash "$UPDATER"   # same request 4: waiting did not use it up
+    rm -rf "$STATE/update-pending" "$STATE/staged"
+    FAKE_TIME=2345 bash "$UPDATER"   # same request 4: waiting did not use it up
     grep -q 'github:librepod/os/v9.9.9' "$STATE/staged/flake.nix" \
       || { echo "FAIL: update not applied inside a midnight-wrapping window"; exit 1; }
 
@@ -195,7 +202,7 @@ pkgs.runCommand "updater-test"
     echo '{"requestId":5,"desiredVersion":"v9.9.9","apply":"now"}' > "$SPEC_FILE"
     export LIBREPOD_URI_PREFIX="git+file:///srv/os?ref="
     printf 'inputs.librepod.url = "git+file:///srv/os?ref=v0.3.5";\n' > "$FLAKE/flake.nix"
-    rm -f "$STATE/update-pending"
+    rm -rf "$STATE/update-pending" "$STATE/staged"
 
     bash "$UPDATER"
 
@@ -210,7 +217,7 @@ pkgs.runCommand "updater-test"
     echo '{}' > "$SPEC_FILE"   # no request → silent, label reconcile still runs
     pin v0.3.5
     booted v0.3.5
-    rm -f "$STATE/update-pending"
+    rm -rf "$STATE/update-pending" "$STATE/staged"
     unset LIBREPOD_NODE_NAME
     HN="$(cat /proc/sys/kernel/hostname)"
     bash "$UPDATER"
@@ -225,7 +232,7 @@ pkgs.runCommand "updater-test"
     bash "$UPDATER"
     [ ! -s "$LOG" ] \
       || { echo "FAIL: poll touched the cluster while an update was in flight"; exit 1; }
-    rm -f "$STATE/update-pending"
+    rm -rf "$STATE/update-pending" "$STATE/staged"
 
     # ---- scenario 8: the booted version wins over flake.lock -----------------
     # After a failed update the lock can name the new tag while the old one runs.
@@ -242,7 +249,7 @@ pkgs.runCommand "updater-test"
       || { echo "FAIL: status currentVersion not from the booted system"; exit 1; }
     grep -q "systemctl reboot" "$LOG" \
       || { echo "FAIL: a lock naming v9.9.9 masked the update as up to date"; exit 1; }
-    rm -f "$STATE/update-pending"
+    rm -rf "$STATE/update-pending" "$STATE/staged"
 
     # ---- scenario 9: a request acts once; later polls stay silent -----------
     : > "$LOG"
@@ -256,7 +263,7 @@ pkgs.runCommand "updater-test"
       || { echo "FAIL: status does not name request 7"; exit 1; }
     # Back on v0.3.5 (say the trial failed) with the same request in the mailbox.
     : > "$LOG"
-    rm -f "$STATE/update-pending"
+    rm -rf "$STATE/update-pending" "$STATE/staged"
     pin v0.3.5
     bash "$UPDATER"
     ! grep -q "systemctl reboot" "$LOG" \
@@ -277,7 +284,7 @@ pkgs.runCommand "updater-test"
     echo v9.9.9 > "$STATE/failed-versions"
     export SPEC_FILE="$STUBS/spec-auto.json"
     echo '{"requestId":8,"desiredVersion":"v9.9.9","policy":{"unattended":true,"window":"22:00-06:00"}}' > "$SPEC_FILE"
-    FAKE_HOUR=23 bash "$UPDATER"
+    FAKE_TIME=2300 bash "$UPDATER"
     ! grep -q "systemctl reboot" "$LOG" \
       || { echo "FAIL: a failed version was retried unattended"; exit 1; }
     grep -qF 'state\": \"rejected' "$LOG" \
@@ -292,7 +299,7 @@ pkgs.runCommand "updater-test"
     bash "$UPDATER"
     grep -q "systemctl reboot" "$LOG" \
       || { echo "FAIL: the owner's new request did not retry the failed version"; exit 1; }
-    rm -f "$STATE/update-pending"
+    rm -rf "$STATE/update-pending" "$STATE/staged"
 
     # ---- scenario 13: a failed build leaves the device flake untouched ------
     : > "$LOG"
@@ -305,13 +312,15 @@ pkgs.runCommand "updater-test"
       || { echo "FAIL: a failed build changed the device flake"; exit 1; }
     grep -qF 'state\": \"failed' "$LOG" \
       || { echo "FAIL: the failed build was not reported"; exit 1; }
+    test ! -e "$STATE/staged" \
+      || { echo "FAIL: a failed build left its staged copy"; exit 1; }
     # The owner asks again: the device builds again, not "already on v9.9.9".
     : > "$LOG"
     echo '{"requestId":11,"desiredVersion":"v9.9.9","apply":"now"}' > "$SPEC_FILE"
     bash "$UPDATER"
     ! grep -q "already on" "$LOG" && grep -q "systemctl reboot" "$LOG" \
       || { echo "FAIL: the poll after a failed build claimed up to date"; exit 1; }
-    rm -f "$STATE/update-pending"
+    rm -rf "$STATE/update-pending" "$STATE/staged"
 
     # ---- scenario 14: no boot entry for NEW → no trial, no reboot -----------
     : > "$LOG"
@@ -329,7 +338,7 @@ pkgs.runCommand "updater-test"
     pin v0.3.5
     booted v0.3.5
     echo '{"requestId":13,"desiredVersion":"v0.1.0","policy":{"unattended":true,"window":"22:00-06:00"}}' > "$SPEC_FILE"
-    FAKE_HOUR=23 bash "$UPDATER"
+    FAKE_TIME=2300 bash "$UPDATER"
     ! grep -q "systemctl reboot" "$LOG" \
       || { echo "FAIL: an unattended downgrade was applied"; exit 1; }
     grep -qF 'state\": \"rejected' "$LOG" && grep -q "only upgrades" "$LOG" \
@@ -339,6 +348,37 @@ pkgs.runCommand "updater-test"
     bash "$UPDATER"
     ! grep -q "systemctl reboot\|nix-env" "$LOG" && grep -q "already on v0.3.5" "$LOG" \
       || { echo "FAIL: a request for the booted version did more than report done"; exit 1; }
+
+    # ---- scenario 16: a window it can't read → rejected, not parked ---------
+    : > "$LOG"
+    echo '{"requestId":15,"desiredVersion":"v9.9.9","policy":{"unattended":true,"window":"22:00-06:00 PST"}}' > "$SPEC_FILE"
+    FAKE_TIME=2300 bash "$UPDATER"
+    ! grep -q "systemctl reboot" "$LOG" && grep -qF 'state\": \"rejected' "$LOG" \
+      || { echo "FAIL: a malformed window was not rejected"; exit 1; }
+    [ "$(cat "$STATE/request-id")" = 15 ] \
+      || { echo "FAIL: request 15 not recorded as handled"; exit 1; }
+
+    # ---- scenario 17: a build that never finished → failed, not `building` --
+    : > "$LOG"
+    mkdir -p "$STATE/staged"   # killed mid-build; request 15 is already handled
+    bash "$UPDATER"
+    grep -qF 'state\": \"failed' "$LOG" && grep -q "interrupted" "$LOG" \
+      || { echo "FAIL: an interrupted build was not reported"; exit 1; }
+    test ! -e "$STATE/staged" \
+      || { echo "FAIL: the interrupted build's staged copy left behind"; exit 1; }
+
+    # ---- scenario 18: the sentinel failed on the trial boot → trial ends ----
+    : > "$LOG"
+    # the booted system is the trial one
+    jq -nc --arg to "$STUBS/old-system" '{to:$to, version:"v9.9.9", phase:"trial"}' > "$STATE/update-pending"
+    bash "$UPDATER"   # the sentinel is still checking
+    ! grep -q "systemctl reboot" "$LOG" \
+      || { echo "FAIL: rebooted while the sentinel was still checking"; exit 1; }
+    FAKE_SENTINEL=failed bash "$UPDATER"
+    grep -q "systemctl reboot" "$LOG" \
+      || { echo "FAIL: a trial whose sentinel failed was not ended"; exit 1; }
+    jq -e '.phase == "trial" and .reason == "sentinel-failed"' "$STATE/update-pending" >/dev/null \
+      || { echo "FAIL: the OLD boot needs update-pending and the reason"; exit 1; }
 
     echo "updater scenarios passed"
     touch $out

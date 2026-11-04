@@ -69,7 +69,9 @@ if [ "$BOOTED" != "$TO" ]; then
     "$NIX_ENV_BIN" -p "$PROFILE" --set "$(jq -r '.from' "$PENDING")"
     report idle "update to $VERSION never started; cleared"
   fi
-  rm -rf "$PENDING" "$STAGED"
+  # Staged copy first: the updater reads one without update-pending as a build
+  # that never finished.
+  rm -rf "$STAGED" "$PENDING"
   exit 0
 fi
 

@@ -23,9 +23,10 @@ trial failed. Deleting or re-creating the ConfigMap never starts an update.
 - `apply: "now"`: the owner asked. The device applies the tag at once, also
   a version that failed before.
 - Without `apply: "now"` the update is unattended and needs
-  `"policy": { "unattended": true, "window": "22:00-06:00" }` (device clock;
-  the window may cross midnight). The device waits for the window and never
-  retries a version whose trial failed on it.
+  `"policy": { "unattended": true, "window": "22:00-06:00" }` (`HH:MM-HH:MM`,
+  device clock; the window may cross midnight). The device waits for the
+  window and never retries a version whose trial failed on it. A window it
+  can't read rejects the request.
 
 ## `status.json` (device → Marketplace)
 

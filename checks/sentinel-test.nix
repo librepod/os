@@ -1,11 +1,21 @@
 { pkgs }:
 
+let
+  # The package modules/updates ships; the stubs below stand in for nix, k3s
+  # and systemd.
+  inherit
+    (import ../modules/updates/scripts.nix {
+      inherit (pkgs) writeShellApplication;
+      runtimeInputs = [ pkgs.jq ];
+    })
+    sentinel
+    ;
+in
 pkgs.runCommand "sentinel-test"
   {
     buildInputs = with pkgs; [
       bash
       jq
-      shellcheck
     ];
   }
   ''
@@ -15,11 +25,7 @@ pkgs.runCommand "sentinel-test"
     : > "$CALLS_LOG"
     export PATH="$ROOT/bin:$PATH"
 
-    # Same concatenation modules/updates/default.nix ships.
-    SENTINEL="$ROOT/sentinel"
-    # with the errexit/nounset/pipefail writeShellApplication adds
-    { printf '#!/usr/bin/env bash\nset -euo pipefail\n'; cat "${../modules/updates/common.sh}" "${../modules/updates/sentinel.sh}"; } > "$SENTINEL"
-    shellcheck "$SENTINEL"   # writeShellApplication runs it at build time too
+    SENTINEL="${sentinel}/bin/librepod-update-sentinel"
 
     # OLD and NEW toplevels, each with a switch-to-configuration that logs.
     mkdir -p "$ROOT/bin" "$ROOT/state" "$ROOT/flake"

@@ -8,25 +8,19 @@
 let
   cfg = config.librepod.updates;
 
-  # Shared env/status scaffolding, prepended to both scripts so they can't
-  # drift (env defaults, kctl, current_version, report, update-pending).
-  common = builtins.readFile ./common.sh;
-
-  mkScript =
-    name: text:
-    pkgs.writeShellApplication {
-      inherit name;
+  inherit
+    (import ./scripts.nix {
+      inherit (pkgs) writeShellApplication;
       runtimeInputs = with pkgs; [
         nix
         jq
         k3s
         config.systemd.package # bootctl, matching the running systemd
       ];
-      text = common + text;
-    };
-
-  updater = mkScript "librepod-updater" (builtins.readFile ./updater.sh);
-  sentinel = mkScript "librepod-update-sentinel" (builtins.readFile ./sentinel.sh);
+    })
+    updater
+    sentinel
+    ;
 
   stateDir = "/var/lib/librepod";
 in
@@ -54,6 +48,9 @@ in
       serviceConfig = {
         Type = "oneshot";
         ExecStart = "${updater}/bin/librepod-updater";
+        # A hung command (kubectl has no request timeout) would stop the polls
+        # until a reboot. Leaves room for a full system download on a slow link.
+        TimeoutStartSec = "2h";
       };
     };
 

@@ -4,7 +4,8 @@
 
 BOOTCTL="${BOOTCTL:-bootctl}"
 
-die() { report failed "$1"; exit 1; }
+# The staged copy goes too: one left behind means a build that never finished.
+die() { report failed "$1"; rm -rf "$STAGED"; exit 1; }
 
 # Stamp/heal librepod.os/version from the lock: first boot (discovery gate
 # for the Marketplace card, design: within 5 min) and self-heal for a label
@@ -21,7 +22,22 @@ reconcile_label() {
 # An update is in flight (staged, or the sentinel is verifying it): stand
 # down, so a poll neither overwrites its status nor stages a second one on top.
 if [ -e "$PENDING" ]; then
+  # The sentinel ends every trial. If it failed without a verdict (stopped at
+  # its TimeoutStartSec, crashed), end the trial here: OLD is still the default.
+  if [ "$(readlink -f "$CURRENT_SYSTEM")" = "$(jq -r '.to' "$PENDING")" ] \
+     && [ "$(jq -r '.phase' "$PENDING")" != committing ] \
+     && [ "$("$SYSTEMCTL" is-active librepod-update-sentinel || true)" = failed ]; then
+    write_pending "$(jq -c '.reason = "sentinel-failed"' "$PENDING")"
+    "$SYSTEMCTL" reboot
+  fi
   echo "[librepod] update in flight; skipping this poll"; exit 0
+fi
+
+# A build that never finished (TimeoutStartSec, a reboot, a power cut) left
+# its staged copy; without this its request would show `building` for good.
+if [ -d "$STAGED" ]; then
+  report failed "update interrupted before its trial boot; nothing changed"
+  rm -rf "$STAGED"
 fi
 
 # ---- 1. ensure ConfigMap exists (first boot: create + stamp status) --------
@@ -74,21 +90,22 @@ fi
 if [ "$APPLY" != "now" ]; then
   # unattended: policy must opt in, now within window, no failed versions
   # (the owner's own request may retry one)
+  [ "$UNATTENDED" = "true" ] || exit 0   # not handled yet: waits for consent
+  # A window this can't read would hold the request back, silently, for good.
+  hhmm='([01][0-9]|2[0-3]):[0-5][0-9]'
+  [[ "$WINDOW" =~ ^$hhmm-$hhmm$ ]] && [ "${WINDOW%-*}" != "${WINDOW#*-}" ] \
+    || finish rejected "policy.window '$WINDOW' is not a HH:MM-HH:MM window"
   in_window() {
-    [ -n "$WINDOW" ] || return 1
-    local h; h="$(date +%H)"
-    local lo hi
-    lo="${WINDOW%%-*}"; hi="${WINDOW##*-}"
-    lo="${lo%%:*}"; hi="${hi%%:*}"
+    local now lo hi
+    now="$(date +%H%M)"; lo="${WINDOW%-*}"; hi="${WINDOW#*-}"
+    lo="${lo/:/}"; hi="${hi/:/}"   # 22:30 → 2230; [ ] reads 0600 as decimal
     if [ "$lo" -gt "$hi" ]; then   # window crosses midnight (e.g. 22:00-06:00)
-      [ "$h" -ge "$lo" ] || [ "$h" -lt "$hi" ]
+      [ "$now" -ge "$lo" ] || [ "$now" -lt "$hi" ]
     else
-      [ "$h" -ge "$lo" ] && [ "$h" -lt "$hi" ]
+      [ "$now" -ge "$lo" ] && [ "$now" -lt "$hi" ]
     fi
   }
-  if [ "$UNATTENDED" != "true" ] || ! in_window; then
-    exit 0   # not handled yet: waits for consent or the window
-  fi
+  in_window || exit 0   # not handled yet: waits for the window
   if grep -qxF "$DESIRED" "$STATE_DIR/failed-versions" 2>/dev/null; then
     finish rejected "$DESIRED failed its trial on this device; the owner can ask again"
   fi
