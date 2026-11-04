@@ -31,6 +31,8 @@ done
 [ -n "$IDENTITY" ] || { echo "--identity is required (users/keys live there)"; exit 1; }
 # It lands in a Nix string in install.nix.
 [[ "$DISK" =~ ^/dev/[A-Za-z0-9/_.-]+$ ]] || { echo "invalid disk: $DISK"; exit 1; }
+# Hostname, k8s node and ConfigMap name, and a bare Nix attr name in flake.nix.
+[[ "$NAME" =~ ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || { echo "invalid name: $NAME (a-z, 0-9, -)"; exit 1; }
 
 if [ -z "$TAG" ]; then
   TAG="$("$CURL_BIN" -fsSL https://api.github.com/repos/librepod/os/releases/latest \
@@ -89,9 +91,9 @@ SRC="$("$NIX_BIN" --extra-experimental-features "nix-command flakes" eval --raw 
   --expr "(builtins.getFlake \"path:$WORKDIR\").inputs.librepod.outPath")"
 install -m 644 "$SRC/modules/disko/default.nix" "$WORKDIR/disk.nix"
 write_facts ""
-# The release's default for new installs, frozen from now on.
+# A fresh disk starts on the release's NixOS version; frozen from now on.
 SV="$("$NIX_BIN" --extra-experimental-features "nix-command flakes" eval --raw \
-  "$WORKDIR#nixosConfigurations.$NAME.config.system.stateVersion")"
+  "$WORKDIR#nixosConfigurations.$NAME.config.system.nixos.release")"
 [[ "$SV" =~ ^[0-9]+\.[0-9]+$ ]] || { echo "unexpected stateVersion: $SV"; exit 1; }
 write_facts "system.stateVersion = \"$SV\";"
 

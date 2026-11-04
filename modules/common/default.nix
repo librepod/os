@@ -50,7 +50,7 @@
   # you upgrade Nixpkgs later on you would keep the state version the same.
   # Nixpkgs uses the state version to migrate your NixOS system because in order to
   # migrate your system each migration needs to know where your system started from.
-  # New installs get this; the installer writes it into the device flake
-  # (install.nix), which wins, so a later bump never reaches an installed device.
+  # Devices set up before librepod-install run on this. The installer writes the
+  # release's NixOS version into install.nix instead, which wins.
   system.stateVersion = lib.mkDefault "21.11";
 }

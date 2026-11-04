@@ -38,7 +38,7 @@ pkgs.runCommand "installer-test"
     case " \$* " in
       *" flake lock "*) : > flake.lock ;;  # would fetch the tag and write flake.lock
       *getFlake*) printf %s "$ROOT/src" ;;  # the fetched release source
-      *system.stateVersion*) printf 21.11 ;;
+      *system.nixos.release*) printf 26.05 ;;
     esac
     EOF
     chmod +x "$ROOT/bin/nix"
@@ -85,7 +85,7 @@ pkgs.runCommand "installer-test"
       || { echo "FAIL: disk.nix is not the release's layout"; exit 1; }
     grep -qF 'imports = [ ./disk.nix ];' "$FACTS" \
       && grep -qF 'disko.devices.disk.main.device = "/dev/nvme0n1";' "$FACTS" \
-      && grep -qF 'system.stateVersion = "21.11";' "$FACTS" \
+      && grep -qF 'system.stateVersion = "26.05";' "$FACTS" \
       || { echo "FAIL: install.nix wrong: $(cat "$FACTS")"; exit 1; }
     NIX_STATE_DIR="$ROOT/nix" nix-instantiate --store dummy:// --parse "$FACTS" >/dev/null \
       || { echo "FAIL: install.nix does not parse"; exit 1; }
@@ -118,6 +118,17 @@ pkgs.runCommand "installer-test"
       echo "FAIL: an invalid --disk was accepted"; exit 1
     fi
     ! grep -q disko "$CALLS_LOG" || { echo "FAIL: disko ran for an invalid --disk"; exit 1; }
+
+    # ---- scenario 5: names that are no hostname, or break out of the Nix ------
+    : > "$CALLS_LOG"
+    for name in 'a" ; x = import ./evil ; #' pod.e2e 1pod Pod; do
+      if bash "$INSTALL" \
+        --device lenovo-m710q --name "$name" --os-tag v0.3.5 \
+        --identity "$ROOT/identity/identity.nix" >/dev/null 2>&1; then
+        echo "FAIL: invalid --name '$name' was accepted"; exit 1
+      fi
+    done
+    ! grep -q disko "$CALLS_LOG" || { echo "FAIL: disko ran for an invalid --name"; exit 1; }
 
     echo "installer scenarios passed"
     touch $out
