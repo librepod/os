@@ -50,7 +50,7 @@ APPLY="$(echo "$SPEC_JSON" | jq -r '.apply // empty')"
 UNATTENDED="$(echo "$SPEC_JSON" | jq -r '.policy.unattended // false')"
 WINDOW="$(echo "$SPEC_JSON" | jq -r '.policy.window // empty')"
 
-handled() { echo "$REQ" > "$STATE_DIR/request-id"; }
+handled() { write_state "$STATE_DIR/request-id" "$REQ"; }
 finish() { handled; report "$1" "$2"; exit 0; } # state, detail
 
 # ---- 2. gate ----------------------------------------------------------------
@@ -125,7 +125,7 @@ start_trial() { # old toplevel, new toplevel
 
 # ---- 4. build (no live switch) -------------------------------------------------
 OUT="$("$NIX_BIN" build --no-link --print-out-paths \
-  "$STAGED#nixosConfigurations.$NODE_NAME.config.system.build.toplevel" 2>/dev/null)" \
+  "$STAGED#nixosConfigurations.$NODE_NAME.config.system.build.toplevel")" \
   || die "build failed for $DESIRED"
 
 [ -e "$OUT/nixos-version" ] || die "build output missing nixos-version — refusing to activate"

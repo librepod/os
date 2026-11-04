@@ -49,8 +49,9 @@ report() { # state, detail — best-effort telemetry; cv from the booted system
   echo "[librepod][$1] $2"
 }
 
-# Write-then-rename: the sentinel reads it after a power cut.
+# Write-then-rename: the scripts read these files after a power cut.
 # Synced both sides of the rename: ext4 holds a rename in memory for ~5 s, and
-# a power cut in that window would bring back the previous phase.
-write_pending() { echo "$1" > "$PENDING.new" && sync "$PENDING.new" && mv -f "$PENDING.new" "$PENDING" && sync "$STATE_DIR"; }
+# a power cut in that window would bring back the previous content.
+write_state() { echo "$2" > "$1.new" && sync "$1.new" && mv -f "$1.new" "$1" && sync "$STATE_DIR"; } # file in STATE_DIR, content
+write_pending() { write_state "$PENDING" "$1"; }
 set_phase() { write_pending "$(jq -c --arg p "$1" '.phase = $p' "$PENDING")"; }

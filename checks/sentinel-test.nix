@@ -156,6 +156,8 @@ pkgs.runCommand "sentinel-test"
       || { echo "FAIL: an update that never ran was recorded as failed"; exit 1; }
     grep -qF 'state\": \"idle' "$CALLS_LOG" \
       || { echo "FAIL: idle not reported"; exit 1; }
+    grep -qx "nix-env -p $ROOT/profile --set $ROOT/old" "$CALLS_LOG" \
+      || { echo "FAIL: profile not set back to FROM"; exit 1; }
     test ! -e "$ROOT/state/update-pending" && test ! -e "$ROOT/state/staged" \
       || { echo "FAIL: update-pending or the staged copy left behind"; exit 1; }
     flake_untouched

@@ -32,6 +32,9 @@ commit_trial() {
     for f in flake.nix flake.lock; do
       cp "$STAGED/$f" "$FLAKE_DIR/.$f.new" && mv -f "$FLAKE_DIR/.$f.new" "$FLAKE_DIR/$f"
     done
+    # On disk before the staged copy and update-pending go: until then a cut
+    # redoes this commit.
+    sync
     rm -rf "$STAGED"
   fi
   if [ "$BOOTED" != "$TO" ]; then
@@ -61,7 +64,9 @@ if [ "$BOOTED" != "$TO" ]; then
     reason="$(jq -r '.reason // "trial-did-not-finish"' "$PENDING")"
     report rolled_back "$VERSION failed its trial boot ($reason); back on $(current_version)"
   else
-    # A power cut before the trial boot: nothing ran, so nothing failed.
+    # A power cut before the trial boot: nothing ran, so nothing failed. A cut
+    # inside start_trial can leave the profile on NEW; FROM is the boot default.
+    "$NIX_ENV_BIN" -p "$PROFILE" --set "$(jq -r '.from' "$PENDING")"
     report idle "update to $VERSION never started; cleared"
   fi
   rm -rf "$PENDING" "$STAGED"
