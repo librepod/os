@@ -128,6 +128,15 @@ nix run github:nix-community/nixos-anywhere -- --flake .#my-machine root@<ip>
 curl https://raw.githubusercontent.com/librepod/librepod-install/master/librepod-install | bash -x
 ```
 
+## Testing
+
+```bash
+nix flake check            # eval checks + stubbed updater/sentinel/installer scenarios, formatting
+nix build .#updates-e2e -L # end-to-end OS updates in a QEMU VM
+```
+
+`updates-e2e` boots one VM with the real stack (UEFI, systemd-boot, k3s) and runs every update scenario against a generated local release repo: a healthy update, k3s down, power cuts, a build failure, a stage-1 panic and hang, no fetch. It needs x86_64-linux with KVM (`/dev/kvm` writable), takes about an hour, and leaves a ~5 GB disk image in the store (`nix-collect-garbage` frees it). A passing run prints `updates-e2e: all scenarios passed`. Nix caches the result, so add `--rebuild` to run it again on unchanged code. `nix build .#trial-spike -L` covers only the boot-loader mechanics of the trial boot.
+
 ## Branching & Releases
 
 LibrePod OS uses trunk-based development — there is no `develop` branch.
