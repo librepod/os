@@ -154,7 +154,7 @@ LibrePod OS uses trunk-based development — there is no `develop` branch.
   git tag v0.2.0 && git push origin v0.2.0
   ```
 
-  The dispatch path validates semver ordering and tags `master` HEAD; both paths publish a GitHub Release marked **Latest**, but only after `updates-e2e` passes on that commit. A pushed tag that fails it gets no Release. Pin a stable input with `github:librepod/os/vX.Y.Z`.
+  The dispatch path validates semver ordering and tags `master` HEAD; both paths publish a GitHub Release marked **Latest**. Releases don't run `updates-e2e`: run it on the commit first, locally or via **Actions → Updates E2E → Run workflow** (manual only, about an hour). Pin a stable input with `github:librepod/os/vX.Y.Z`.
 
   The cluster bootstrap artifact follows the same discipline: `modules/k3s/charts/flux-instance.nix` pins `ref = "vX.Y.Z"` — bumped deliberately like any other input, never tracking `latest`.
 

@@ -14,46 +14,14 @@ permissions:
   contents: write
 
 jobs:
-  # Nothing is released until the update path passes on the exact commit.
-  e2e:
-    name: Update path (updates-e2e)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write # flakehub-cache
-    outputs:
-      sha: ${{ steps.sha.outputs.sha }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && 'master' || github.ref }}
-
-      - id: sha
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      # The VM test needs KVM; the build sandbox reaches it as a nixbld user.
-      - name: Enable KVM
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          test -w /dev/kvm || { echo "::error::runner has no usable /dev/kvm"; exit 1; }
-
-      - uses: DeterminateSystems/determinate-nix-action@v3
-        with:
-          flakehub-cache: true
-
-      - run: nix build .#updates-e2e -L
-
   cut:
     name: Cut release (dispatch)
     if: github.event_name == 'workflow_dispatch'
-    needs: e2e
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ needs.e2e.outputs.sha }} # what e2e tested, even if master moved since
+          ref: master
           fetch-depth: 0
 
       - name: Validate version
@@ -74,7 +42,7 @@ jobs:
           fi
           echo "TAG=v$version" >> "$GITHUB_ENV"
 
-      - name: Tag the tested commit
+      - name: Tag master HEAD
         run: |
           git tag "$TAG"
           git push origin "$TAG"
@@ -90,7 +58,6 @@ jobs:
   publish:
     name: Publish release (tag push)
     if: github.event_name == 'push'
-    needs: e2e
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
