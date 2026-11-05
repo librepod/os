@@ -25,6 +25,7 @@ pkgs.runCommand "updater-test"
     STUBS=$(mktemp -d)
     LOG="$STUBS/calls.log"
     export CALLS_LOG="$LOG"
+    export FAKE_NO_CM="$STUBS/no-cm"   # present: the ConfigMap is gone
     FLAKE="$STUBS/flake"
     STATE="$STUBS/state"
 
@@ -64,8 +65,11 @@ pkgs.runCommand "updater-test"
     case "$*" in
       # killed (TimeoutStartSec, a cut) just as it reports `building`
       *"patch"*building*) [ -z "$FAKE_KILL_AT_BUILDING" ] || kill -9 $PPID;;
+      # the API server not up yet, or the owner deleted the ConfigMap
+      *"patch"*) [ -z "$FAKE_PATCH_FAIL" ] && [ ! -e "$FAKE_NO_CM" ];;
       *"get node"*) echo "True";;
-      *"get configmap"*) cat "$SPEC_FILE" 2>/dev/null || true;;
+      *"get configmap"*) [ ! -e "$FAKE_NO_CM" ] || exit 1; cat "$SPEC_FILE" 2>/dev/null || true;;
+      *"create configmap"*) rm -f "$FAKE_NO_CM";;
       *"create"*|*"patch"*|*"label"*) exit 0;;
       *) exit 0;;
     esac
@@ -148,6 +152,8 @@ pkgs.runCommand "updater-test"
       || { echo "FAIL: staged flake.nix not repinned to v9.9.9"; exit 1; }
     jq -e '.nodes.librepod.original.ref == "v9.9.9"' "$STATE/staged/flake.lock" >/dev/null \
       || { echo "FAIL: staged flake.lock not updated to v9.9.9"; exit 1; }
+    grep -q 'v0.3.5' "$STATE/staged/pin-before/flake.nix" && test -e "$STATE/staged/pin-before/flake.lock" \
+      || { echo "FAIL: the old pin not kept for an aborted commit"; exit 1; }
     grep -qF -- "--out-link $STATE/staged/result" "$LOG" \
       || { echo "FAIL: NEW not rooted until it has a profile generation"; exit 1; }
     grep -q 'v0.3.5' "$FLAKE/flake.nix" \
@@ -238,8 +244,8 @@ pkgs.runCommand "updater-test"
     export SPEC_FILE="$STUBS/spec-v9.json"
     echo '{"to":"v9.9.9"}' > "$STATE/update-pending"
     bash "$UPDATER"
-    [ ! -s "$LOG" ] \
-      || { echo "FAIL: poll touched the cluster while an update was in flight"; exit 1; }
+    ! grep -q "patch\|label\|reboot" "$LOG" \
+      || { echo "FAIL: poll wrote to the cluster while an update was in flight"; exit 1; }
     rm -rf "$STATE/update-pending" "$STATE/staged"
 
     # ---- scenario 8: the booted version wins over flake.lock -----------------
@@ -432,6 +438,65 @@ pkgs.runCommand "updater-test"
       || { echo "FAIL: update-pending or the staged copy left behind"; exit 1; }
     ! grep -q "systemctl reboot\|interrupted" "$LOG" \
       || { echo "FAIL: a resolved update was rebooted for, or read as interrupted"; exit 1; }
+
+    # ---- scenario 23: the API server doesn't take the verdict → kept ---------
+    : > "$LOG"
+    mkdir -p "$STATE/staged"
+    jq -nc --arg to "$STUBS/fake-out" '{to:$to, version:"v9.9.9", phase:"committing", bootId:"boot-0",
+             verdict:{state:"done", detail:"update to v9.9.9 verified healthy"}}' > "$STATE/update-pending"
+    FAKE_PATCH_FAIL=1 FAKE_SENTINEL=inactive bash "$UPDATER"
+    jq -e '.verdict.state == "done"' "$STATE/update-pending" >/dev/null && test -d "$STATE/staged" \
+      || { echo "FAIL: a verdict status.json never took was dropped"; exit 1; }
+    ! grep -q "systemctl reboot" "$LOG" \
+      || { echo "FAIL: rebooted for an unsent verdict"; exit 1; }
+    : > "$LOG"
+    FAKE_SENTINEL=inactive bash "$UPDATER"   # the next poll
+    grep -qF 'state\": \"done' "$LOG" && test ! -e "$STATE/update-pending" && test ! -e "$STATE/staged" \
+      || { echo "FAIL: the kept verdict was not sent on the next poll"; exit 1; }
+    # The owner deleted the ConfigMap meanwhile: made again, then sent.
+    : > "$LOG"
+    jq -nc '{version:"v9.9.9", phase:"committing", bootId:"boot-0",
+             verdict:{state:"done", detail:"update to v9.9.9 verified healthy"}}' > "$STATE/update-pending"
+    touch "$FAKE_NO_CM"
+    FAKE_SENTINEL=inactive bash "$UPDATER"
+    grep -q "create configmap" "$LOG" && test ! -e "$STATE/update-pending" \
+      || { echo "FAIL: a verdict with no ConfigMap to go to was kept for good"; exit 1; }
+
+    # ---- scenario 24: the sentinel failed off its trial → run it again ------
+    for p in "old-system trial" "fake-out committing"; do   # back on OLD; NEW mid-commit
+      set -- $p
+      : > "$LOG"
+      ln -sfn "$1" "$STUBS/current-system"
+      jq -nc --arg to "$STUBS/fake-out" --arg p "$2" '{to:$to, version:"v9.9.9", phase:$p, bootId:"boot-0"}' > "$STATE/update-pending"
+      FAKE_SENTINEL=failed bash "$UPDATER"
+      grep -qx "systemctl start --no-block librepod-update-sentinel" "$LOG" && ! grep -q "systemctl reboot" "$LOG" \
+        || { echo "FAIL: a sentinel that failed on $1 ($2) was not run again"; exit 1; }
+    done
+    ln -sfn old-system "$STUBS/current-system"
+    rm -f "$STATE/update-pending"
+
+    # ---- scenario 25: an unreadable update-pending → moved aside, rebooted --
+    : > "$LOG"
+    printf '{"to":"/nix/st' > "$STATE/update-pending"   # cut short by fs damage
+    bash "$UPDATER"
+    test ! -e "$STATE/update-pending" && test -e "$STATE/update-pending.bad" \
+      || { echo "FAIL: the unreadable update-pending was not moved aside"; exit 1; }
+    grep -qF 'state\": \"failed' "$LOG" && grep -q "systemctl reboot" "$LOG" \
+      || { echo "FAIL: not reported, or not back to the boot default"; exit 1; }
+
+    # ---- scenario 26: an unreadable request-id fails closed -----------------
+    : > "$LOG"
+    echo 7x > "$STATE/request-id"
+    echo '{"requestId":18,"desiredVersion":"v9.9.9","apply":"now"}' > "$SPEC_FILE"
+    bash "$UPDATER"
+    ! grep -q "nix build\|systemctl reboot" "$LOG" && grep -qF 'state\": \"rejected' "$LOG" \
+      || { echo "FAIL: a request went ahead with no record of what was handled"; exit 1; }
+    [ "$(cat "$STATE/request-id")" = 18 ] \
+      || { echo "FAIL: request-id not healed"; exit 1; }
+    : > "$LOG"
+    bash "$UPDATER"
+    ! grep -q "patch" "$LOG" \
+      || { echo "FAIL: the rejected request acted again"; exit 1; }
 
     echo "updater scenarios passed"
     touch $out

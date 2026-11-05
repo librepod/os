@@ -23,9 +23,14 @@ CURRENT_SYSTEM="${LIBREPOD_CURRENT_SYSTEM:-/run/current-system}"
 # The updater repins and builds in this copy of FLAKE_DIR; the sentinel
 # copies the pin back only when the update commits.
 STAGED="$STATE_DIR/staged"
+# FLAKE_DIR's pin as it was, kept with the staged copy: a commit that fails
+# after taking the new pin puts this one back.
+PIN_BEFORE="$STAGED/pin-before"
 # The update in flight: {from, to, version, requestId, phase, bootId}, where
 # phase goes staged → trial → committing; the sentinel adds its verdict last.
 PENDING="$STATE_DIR/update-pending"
+# write_state is atomic, so only fs damage leaves it unreadable.
+pending_ok() { jq -e 'type == "object"' "$PENDING" >/dev/null 2>&1; }
 
 # shellcheck disable=SC2086  # KUBECTL may be multiple words ("k3s kubectl")
 kctl() { $KUBECTL "$@"; }
@@ -36,7 +41,7 @@ current_version() {
   cat "$RELEASE_FILE" 2>/dev/null || echo "unknown"
 }
 
-report() { # state, detail — best-effort telemetry; cv from the booted system
+send_status() { # state, detail — fails if status.json did not take it; cv from the booted system
   local now; now="$(date -u +%FT%TZ)"
   local json
   json=$(jq -n \
@@ -45,9 +50,9 @@ report() { # state, detail — best-effort telemetry; cv from the booted system
     '{observedRequestId:($rid | tonumber? // null), currentVersion:$cv,
       state:$st, lastTransition:$ts, detail:$d}')
   kctl -n "$NS" patch configmap "$NODE_NAME" --type merge \
-    -p "$(jq -n --arg s "$json" '{data:{"status.json":$s}}')" >/dev/null 2>&1 || true
-  echo "[librepod][$1] $2"
+    -p "$(jq -n --arg s "$json" '{data:{"status.json":$s}}')" >/dev/null 2>&1
 }
+report() { send_status "$1" "$2" || true; echo "[librepod][$1] $2"; } # state, detail — best-effort telemetry
 
 # Write-then-rename: the scripts read these files after a power cut.
 # Synced both sides of the rename: ext4 holds a rename in memory for ~5 s, and
@@ -57,10 +62,13 @@ write_pending() { write_state "$PENDING" "$1"; }
 set_phase() { write_pending "$(jq -c --arg p "$1" '.phase = $p' "$PENDING")"; }
 
 # The sentinel's verdict is on disk before it is sent: if the sentinel dies
-# before clearing up, the updater's next poll sends it again.
+# before clearing up, or the send fails, the updater's next poll sends it again.
 set_verdict() { write_pending "$(jq -c --arg s "$1" --arg d "$2" '.verdict = {state: $s, detail: $d}' "$PENDING")"; } # state, detail
 send_verdict() {
-  report "$(jq -r '.verdict.state' "$PENDING")" "$(jq -r '.verdict.detail' "$PENDING")"
+  local st d
+  st="$(jq -r '.verdict.state' "$PENDING")"; d="$(jq -r '.verdict.detail' "$PENDING")"
+  echo "[librepod][$st] $d"
+  send_status "$st" "$d" || return 0
   # Staged copy first: without update-pending it reads as an interrupted build.
   rm -rf "$STAGED" "$PENDING"
 }

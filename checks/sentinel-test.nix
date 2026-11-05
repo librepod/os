@@ -48,7 +48,8 @@ pkgs.runCommand "sentinel-test"
     case "$*" in
       *"get node"*) cat "$HEALTH_FILE" 2>/dev/null || true;;
       # killed (a hung kubectl, OOM) as it sends its verdict
-      *"patch"*) [ -z "$FAKE_KILL_AT_REPORT" ] || kill -9 $PPID;;
+      # or the API server not up yet
+      *"patch"*) [ -z "$FAKE_KILL_AT_REPORT" ] || kill -9 $PPID; [ -z "$FAKE_PATCH_FAIL" ];;
     esac
     EOF
     chmod +x "$ROOT/bin/k3s"
@@ -66,6 +67,7 @@ pkgs.runCommand "sentinel-test"
     cat > "$ROOT/bin/nix" <<EOF
     #!/bin/sh
     echo "nix \$*" >> "$CALLS_LOG"
+    [ -z "\$FAKE_FETCH_HANG" ] || exec sleep 60   # egress silently dropped
     [ -z "\$FAKE_NO_FETCH" ]
     EOF
     chmod +x "$ROOT/bin/nix"
@@ -97,6 +99,8 @@ pkgs.runCommand "sentinel-test"
       mkdir -p "$ROOT/state/staged"
       printf 'new-pin\n' > "$ROOT/state/staged/flake.nix"
       printf 'new-lock\n' > "$ROOT/state/staged/flake.lock"
+      mkdir -p "$ROOT/state/staged/pin-before"
+      cp "$ROOT/flake/flake.nix" "$ROOT/flake/flake.lock" "$ROOT/state/staged/pin-before/"
       rm -f "$ROOT/state/failed-versions"
       echo 7 > "$ROOT/state/request-id"   # the updater recorded the request
     }
@@ -107,8 +111,6 @@ pkgs.runCommand "sentinel-test"
         || { echo "FAIL: NEW not made the default"; exit 1; }
       [ "$(cat "$ROOT/flake/flake.nix" "$ROOT/flake/flake.lock")" = "$(printf 'new-pin\nnew-lock')" ] \
         || { echo "FAIL: commit did not take the staged pin"; exit 1; }
-      test ! -e "$ROOT/state/staged" \
-        || { echo "FAIL: staged copy not cleared on commit"; exit 1; }
     }
     flake_untouched() {
       [ "$(cat "$ROOT/flake/flake.nix" "$ROOT/flake/flake.lock")" = "$(printf 'old-pin\nold-lock')" ] \
@@ -126,8 +128,8 @@ pkgs.runCommand "sentinel-test"
       || { echo "FAIL: success label missing"; exit 1; }
     grep -qF 'state\": \"done' "$CALLS_LOG" && grep -qF 'observedRequestId\": 7' "$CALLS_LOG" \
       || { echo "FAIL: done not reported for request 7"; exit 1; }
-    test ! -e "$ROOT/state/update-pending" \
-      || { echo "FAIL: flag not cleared on success"; exit 1; }
+    test ! -e "$ROOT/state/update-pending" && test ! -e "$ROOT/state/staged" \
+      || { echo "FAIL: update-pending or the staged copy not cleared on success"; exit 1; }
     ! grep -q "systemctl reboot" "$CALLS_LOG" \
       || { echo "FAIL: rebooted after a commit on NEW"; exit 1; }
 
@@ -182,14 +184,16 @@ pkgs.runCommand "sentinel-test"
       || { echo "FAIL: commit on OLD did not reboot into NEW"; exit 1; }
     jq -e '.phase == "committing"' "$ROOT/state/update-pending" >/dev/null \
       || { echo "FAIL: the NEW boot needs update-pending to report done"; exit 1; }
+    test -d "$ROOT/state/staged/pin-before" \
+      || { echo "FAIL: the old pin went before the verdict; an abort can't put it back"; exit 1; }
     : > "$CALLS_LOG"
     ln -sfn new "$ROOT/current-system"
     echo v9.9.9 > "$ROOT/release"
     bash "$SENTINEL"
     grep -qF 'state\": \"done' "$CALLS_LOG" && grep -qF 'currentVersion\": \"v9.9.9' "$CALLS_LOG" \
       || { echo "FAIL: done on v9.9.9 not reported after the interrupted commit"; exit 1; }
-    test ! -e "$ROOT/state/update-pending" \
-      || { echo "FAIL: flag not cleared after the interrupted commit"; exit 1; }
+    test ! -e "$ROOT/state/update-pending" && test ! -e "$ROOT/state/staged" \
+      || { echo "FAIL: update-pending or the staged copy not cleared after the interrupted commit"; exit 1; }
     ! grep -q "systemctl reboot" "$CALLS_LOG" \
       || { echo "FAIL: rebooted again on NEW"; exit 1; }
 
@@ -244,6 +248,47 @@ pkgs.runCommand "sentinel-test"
     jq -e '.verdict == {state: "done", detail: "update to v9.9.9 verified healthy"}' \
       "$ROOT/state/update-pending" >/dev/null \
       || { echo "FAIL: killed before clearing up, and the updater has no verdict to send"; exit 1; }
+
+    # ---- scenario 10: the API server doesn't take the verdict → kept --------
+    echo v0.4.0 > "$ROOT/release"
+    boot new trial
+    FAKE_PATCH_FAIL=1 bash "$SENTINEL"
+    jq -e '.verdict.state == "done"' "$ROOT/state/update-pending" >/dev/null && test -d "$ROOT/state/staged" \
+      || { echo "FAIL: a verdict status.json never took was dropped"; exit 1; }
+    # The next run (a reboot, or the updater) only sends it.
+    : > "$CALLS_LOG"
+    bash "$SENTINEL"
+    grep -qF 'state\": \"done' "$CALLS_LOG" && test ! -e "$ROOT/state/update-pending" \
+      || { echo "FAIL: the kept verdict was not sent"; exit 1; }
+    ! grep -q "nix-env\|switch-to-configuration\|nix flake" "$CALLS_LOG" \
+      || { echo "FAIL: a decided update was worked through again"; exit 1; }
+
+    # ---- scenario 11: a cut after the new pin went in, then no entries ------
+    # The retry can't write NEW's entries: OLD again, and OLD's pin too.
+    boot new committing
+    printf 'new-pin\n' > "$ROOT/flake/flake.nix"   # the cut came between the two files
+    FAKE_STC_FAIL=new bash "$SENTINEL"
+    grep -q "systemctl reboot" "$CALLS_LOG" \
+      && jq -e '.phase == "trial" and .reason == "commit-failed"' "$ROOT/state/update-pending" >/dev/null \
+      || { echo "FAIL: the commit that could not finish did not end the trial"; exit 1; }
+    flake_untouched
+
+    # ---- scenario 12: the fetch check hangs → not committed, reason kept ----
+    echo "True" > "$ROOT/health"
+    boot new trial
+    FAKE_FETCH_HANG=1 LIBREPOD_FETCH_TIMEOUT=1 bash "$SENTINEL"
+    grep -q "systemctl reboot" "$CALLS_LOG" \
+      && jq -e '.reason == "update-source-unreachable"' "$ROOT/state/update-pending" >/dev/null \
+      || { echo "FAIL: a hung fetch did not end as update-source-unreachable"; exit 1; }
+    ! grep -q "nix-env\|switch-to-configuration" "$CALLS_LOG" \
+      || { echo "FAIL: committed after a hung fetch"; exit 1; }
+
+    # ---- scenario 13: an unreadable update-pending → left to the updater ----
+    boot new trial
+    printf '{"from":"/nix/st' > "$ROOT/state/update-pending"
+    bash "$SENTINEL"
+    [ "$(cat "$ROOT/state/update-pending")" = '{"from":"/nix/st' ] && [ ! -s "$CALLS_LOG" ] \
+      || { echo "FAIL: the sentinel acted on an unreadable update-pending"; exit 1; }
 
     echo "sentinel scenarios passed"
     touch $out

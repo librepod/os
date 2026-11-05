@@ -21,8 +21,27 @@ reconcile_label() {
     || kctl label node "$NODE_NAME" "librepod.os/version=$cv" --overwrite >/dev/null 2>&1 || true
 }
 
-# The sentinel died between its verdict and clearing up (killed, OOM): finish
-# for it. The two never run at once (After= in default.nix).
+# ---- 1. ensure ConfigMap exists (first boot: create + stamp status) --------
+# First: a verdict below needs somewhere to go, also after the owner deleted it.
+if ! kctl -n "$NS" get configmap "$NODE_NAME" >/dev/null 2>&1; then
+  kctl create namespace "$NS" >/dev/null 2>&1 || true
+  kctl -n "$NS" create configmap "$NODE_NAME" \
+    --from-literal=status.json="{}" >/dev/null 2>&1 || true
+fi
+
+# An unreadable update-pending: nothing can finish its update. Moved aside,
+# then a reboot to the boot default, as a power cut would: this may be a
+# trial boot, with OLD the default.
+if [ -e "$PENDING" ] && ! pending_ok; then
+  mv -f "$PENDING" "$PENDING.bad"
+  rm -rf "$STAGED"
+  report failed "the record of the update in flight was unreadable; moved to $PENDING.bad"
+  "$SYSTEMCTL" reboot
+  exit 0
+fi
+
+# The sentinel died between its verdict and clearing up (killed, OOM), or its
+# send failed: finish for it. The two never run at once (After= in default.nix).
 if [ -e "$PENDING" ] && jq -e '.verdict' "$PENDING" >/dev/null; then
   send_verdict
 fi
@@ -34,13 +53,18 @@ if [ -e "$PENDING" ]; then
   # staged it died before its reboot. Reboot, as a power cut would.
   if [ "$(jq -r '.bootId' "$PENDING")" = "$BOOT_ID" ]; then
     "$SYSTEMCTL" reboot
-  # The sentinel ends every trial. If it failed without a verdict (stopped at
-  # its TimeoutStartSec, crashed), end the trial here: OLD is still the default.
-  elif [ "$(readlink -f "$CURRENT_SYSTEM")" = "$(jq -r '.to' "$PENDING")" ] \
-     && [ "$(jq -r '.phase' "$PENDING")" != committing ] \
-     && [ "$("$SYSTEMCTL" is-active librepod-update-sentinel || true)" = failed ]; then
-    write_pending "$(jq -c '.reason = "sentinel-failed"' "$PENDING")"
-    "$SYSTEMCTL" reboot
+  # The sentinel ends every update. It failed without a verdict (stopped at
+  # its TimeoutStartSec, crashed, a full disk):
+  elif [ "$("$SYSTEMCTL" is-active librepod-update-sentinel || true)" = failed ]; then
+    if [ "$(readlink -f "$CURRENT_SYSTEM")" = "$(jq -r '.to' "$PENDING")" ] \
+       && [ "$(jq -r '.phase' "$PENDING")" != committing ]; then
+      # on the trial, end it here: OLD is still the default.
+      write_pending "$(jq -c '.reason = "sentinel-failed"' "$PENDING")"
+      "$SYSTEMCTL" reboot
+    else
+      # elsewhere its steps are safe to repeat: run it again, once a poll.
+      "$SYSTEMCTL" start --no-block librepod-update-sentinel
+    fi
   fi
   echo "[librepod] update in flight; skipping this poll"; exit 0
 fi
@@ -50,13 +74,6 @@ fi
 if [ -d "$STAGED" ]; then
   report failed "update interrupted before its trial boot; nothing changed"
   rm -rf "$STAGED"
-fi
-
-# ---- 1. ensure ConfigMap exists (first boot: create + stamp status) --------
-if ! kctl -n "$NS" get configmap "$NODE_NAME" >/dev/null 2>&1; then
-  kctl create namespace "$NS" >/dev/null 2>&1 || true
-  kctl -n "$NS" create configmap "$NODE_NAME" \
-    --from-literal=status.json="{}" >/dev/null 2>&1 || true
 fi
 
 CURRENT="$(current_version)"
@@ -69,7 +86,17 @@ SPEC_JSON="$(kctl -n "$NS" get configmap "$NODE_NAME" -o 'jsonpath={.data.spec\.
 # ConfigMap carrying an old requestId does nothing.
 REQ="$(echo "$SPEC_JSON" | jq -r '.requestId // empty' 2>/dev/null || true)"
 LAST="$(cat "$STATE_DIR/request-id" 2>/dev/null || true)"
-if ! [[ "$REQ" =~ ^[0-9]{1,15}$ ]] || [ "$REQ" -le "${LAST:-0}" ]; then
+handled() { write_state "$STATE_DIR/request-id" "$REQ"; }
+finish() { handled; report "$1" "$2"; exit 0; } # state, detail
+if ! [[ "$REQ" =~ ^[0-9]{1,15}$ ]]; then
+  exit 0
+fi
+# A request-id it can't read (fs damage; write_state is atomic) fails closed:
+# this request counts as handled and does nothing, in case it was already.
+if ! [[ "${LAST:-0}" =~ ^[0-9]{1,15}$ ]]; then
+  finish rejected "$STATE_DIR/request-id was unreadable; request $REQ may have been handled already, so ask again"
+fi
+if [ "$REQ" -le "${LAST:-0}" ]; then
   exit 0
 fi
 
@@ -77,9 +104,6 @@ DESIRED="$(echo "$SPEC_JSON" | jq -r '.desiredVersion // empty')"
 APPLY="$(echo "$SPEC_JSON" | jq -r '.apply // empty')"
 UNATTENDED="$(echo "$SPEC_JSON" | jq -r '.policy.unattended // false')"
 WINDOW="$(echo "$SPEC_JSON" | jq -r '.policy.window // empty')"
-
-handled() { write_state "$STATE_DIR/request-id" "$REQ"; }
-finish() { handled; report "$1" "$2"; exit 0; } # state, detail
 
 # ---- 2. gate ----------------------------------------------------------------
 if [ -z "$DESIRED" ]; then
@@ -132,6 +156,8 @@ handled   # from here on a failed build or rollback never retries it by itself
 report building "repinning to $DESIRED"
 # Contents, not the dir: were FLAKE_DIR a symlink, sed would edit the original.
 cp -a "$FLAKE_DIR/." "$STAGED/" || die "could not copy $FLAKE_DIR"
+{ mkdir -p "$PIN_BEFORE" && cp "$STAGED/flake.nix" "$STAGED/flake.lock" "$PIN_BEFORE/"; } \
+  || die "could not copy $FLAKE_DIR"
 if ! grep -q "inputs\\.librepod\\.url = \"${URI_PREFIX}v[0-9.]*\"" "$STAGED/flake.nix"; then
   die "pin line not found in $FLAKE_DIR/flake.nix — refusing to edit unknown file"
 fi

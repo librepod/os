@@ -6,8 +6,16 @@
 TIMEOUT="${LIBREPOD_HEALTH_TIMEOUT:-900}"
 STABLE="${LIBREPOD_HEALTH_STABLE:-120}"
 INTERVAL="${LIBREPOD_POLL_INTERVAL:-15}"
+# Well inside the unit's 25 min: a fetch that hangs fails like one refused.
+FETCH_TIMEOUT="${LIBREPOD_FETCH_TIMEOUT:-120}"
 
-[ -f "$PENDING" ] || exit 0
+pending_ok || exit 0 # none, or unreadable: the updater moves that aside
+
+# Decided, then killed or cut before clearing up: only the sending is left.
+if jq -e '.verdict' "$PENDING" >/dev/null; then
+  send_verdict
+  exit 0
+fi
 
 FROM="$(jq -r '.from // empty' "$PENDING")"
 TO="$(jq -r '.to // empty' "$PENDING")"
@@ -21,12 +29,25 @@ healthy() {
     && [ "$(kctl get node "$NODE_NAME" -o 'jsonpath={.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" = "True" ]
 }
 
+# Write-then-rename, so a power cut never leaves a half-written file. Synced:
+# on disk before the staged copy and update-pending go.
+take_pin() { # dir holding flake.nix and flake.lock
+  for f in flake.nix flake.lock; do
+    cp "$1/$f" "$FLAKE_DIR/.$f.new" && mv -f "$FLAKE_DIR/.$f.new" "$FLAKE_DIR/$f"
+  done
+  sync
+}
+
 # A commit that can't write the boot entries (ESP full, a vfat write error)
 # would fail the same way on every boot: make OLD the default again and end
 # the trial like a failed one.
 abort_commit() {
   { "$NIX_ENV_BIN" -p "$PROFILE" --set "$FROM" && "$FROM/bin/switch-to-configuration" boot; } \
     || { report failed "could not write the boot entries for $VERSION, nor put the old ones back"; exit 1; }
+  # A try before a power cut may have taken the new pin already.
+  if [ -d "$PIN_BEFORE" ]; then
+    take_pin "$PIN_BEFORE"
+  fi
   write_pending "$(jq -c '.phase = "trial" | .reason = "commit-failed"' "$PENDING")"
   "$SYSTEMCTL" reboot
   exit 0
@@ -38,16 +59,10 @@ commit_trial() {
   set_phase committing
   { "$NIX_ENV_BIN" -p "$PROFILE" --set "$TO" && "$TO/bin/switch-to-configuration" boot; } \
     || abort_commit
-  # Only now does FLAKE_DIR take the new pin. Write-then-rename, so a power
-  # cut never leaves a half-written file.
+  # Only now does FLAKE_DIR take the new pin. The staged copy stays until the
+  # verdict is sent: until then a cut redoes this commit, or aborts it.
   if [ -d "$STAGED" ]; then
-    for f in flake.nix flake.lock; do
-      cp "$STAGED/$f" "$FLAKE_DIR/.$f.new" && mv -f "$FLAKE_DIR/.$f.new" "$FLAKE_DIR/$f"
-    done
-    # On disk before the staged copy and update-pending go: until then a cut
-    # redoes this commit.
-    sync
-    rm -rf "$STAGED"
+    take_pin "$STAGED"
   fi
   if [ "$BOOTED" != "$TO" ]; then
     # A power cut mid-commit brought back OLD; NEW is the default now.
@@ -99,7 +114,7 @@ while :; do
       # Healthy and stable. Last, once per stable window (GitHub rate limits):
       # can NEW still fetch updates? One fetch of the release source covers
       # DNS, HTTPS and the repo. A release that fails it is never committed.
-      "$NIX_BIN" flake metadata --refresh "${URI_PREFIX}${VERSION}" >/dev/null && break
+      timeout "$FETCH_TIMEOUT" "$NIX_BIN" flake metadata --refresh "${URI_PREFIX}${VERSION}" >/dev/null && break
       echo "[librepod] cannot fetch ${URI_PREFIX}${VERSION}; not committing"
       reason=update-source-unreachable
       stable_deadline=0
