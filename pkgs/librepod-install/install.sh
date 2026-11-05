@@ -35,8 +35,9 @@ done
 [[ "$NAME" =~ ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || { echo "invalid name: $NAME (a-z, 0-9, -)"; exit 1; }
 
 if [ -z "$TAG" ]; then
+  # -e: an answer without tag_name (rate limited) fails here, not as tag "null".
   TAG="$("$CURL_BIN" -fsSL https://api.github.com/repos/librepod/os/releases/latest \
-    | jq -r .tag_name)" || { echo "could not resolve latest release; pass --os-tag"; exit 1; }
+    | jq -er .tag_name)" || { echo "could not resolve latest release; pass --os-tag"; exit 1; }
 fi
 [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid tag: $TAG"; exit 1; }
 
@@ -98,7 +99,7 @@ SV="$("$NIX_BIN" --extra-experimental-features "nix-command flakes" eval --raw \
 write_facts "system.stateVersion = \"$SV\";"
 
 echo "==> partitioning + formatting via disko (DESTROYS the disk)"
-"$DISKO_BIN" --flake "$WORKDIR#$NAME" --mode destroy,format,mount
+"$DISKO_BIN" --flake "$WORKDIR#$NAME" --mode destroy,format,mount --root-mountpoint "$MNT"
 
 echo "==> installing NixOS"
 install -d -m 700 "$MNT/etc/nixos"
@@ -111,6 +112,6 @@ if [ "$DEVICE_REF" = "./hardware.nix" ]; then
   install -m 644 "$WORKDIR/hardware.nix" "$MNT/etc/nixos/hardware.nix"
 fi
 
-"$NIXOS_INSTALL_BIN" --flake "$WORKDIR#$NAME" --no-root-passwd
+"$NIXOS_INSTALL_BIN" --root "$MNT" --flake "$WORKDIR#$NAME" --no-root-passwd
 
 echo "==> installed $NAME ($DEVICE on $DISK, $TAG). Reboot into the device when ready."

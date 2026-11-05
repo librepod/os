@@ -59,9 +59,9 @@ pkgs.runCommand "installer-test"
       --device lenovo-m710q --name pod-test --os-tag v0.3.5 \
       --identity "$ROOT/identity/identity.nix"
 
-    grep -q "disko --flake .*#pod-test --mode destroy,format,mount" "$CALLS_LOG" \
+    grep -q "disko --flake .*#pod-test --mode destroy,format,mount --root-mountpoint $ROOT/mnt$" "$CALLS_LOG" \
       || { echo "FAIL: disko invocation wrong"; exit 1; }
-    grep -q "nixos-install --flake .*#pod-test --no-root-passwd" "$CALLS_LOG" \
+    grep -q "nixos-install --root $ROOT/mnt --flake .*#pod-test --no-root-passwd" "$CALLS_LOG" \
       || { echo "FAIL: nixos-install invocation wrong"; exit 1; }
     grep -q 'github:librepod/os/v0.3.5' "$ROOT/mnt/etc/nixos/flake.nix" \
       || { echo "FAIL: pin line missing/wrong"; exit 1; }
@@ -129,6 +129,19 @@ pkgs.runCommand "installer-test"
       fi
     done
     ! grep -q disko "$CALLS_LOG" || { echo "FAIL: disko ran for an invalid --name"; exit 1; }
+
+    # ---- scenario 6: GitHub answers without a tag → the --os-tag hint ---------
+    cat > "$ROOT/bin/curl" <<'EOF'
+    #!/bin/sh
+    echo '{"message":"API rate limit exceeded"}'
+    EOF
+    chmod +x "$ROOT/bin/curl"
+    if msg="$(CURL_BIN="$ROOT/bin/curl" bash "$INSTALL" --device lenovo-m710q --name pod-test \
+                --identity "$ROOT/identity/identity.nix" 2>&1)"; then
+      echo "FAIL: installed with no release tag"; exit 1
+    fi
+    grep -q "pass --os-tag" <<< "$msg" \
+      || { echo "FAIL: no --os-tag hint for a tagless answer: $msg"; exit 1; }
 
     echo "installer scenarios passed"
     touch $out
