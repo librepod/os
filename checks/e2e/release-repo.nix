@@ -44,6 +44,10 @@ hostPkgs.runCommand "librepod-os-releases"
     mv flake.lock.tmp flake.lock
 
     git init -q
+    # gc --auto detaches to the background and repacks while the final
+    # `cp -r ./. $out` walks the tree — a race the copy loses. This repo is
+    # throwaway; it never needs gc.
+    git config gc.auto 0
     git config user.email e2e@librepod
     git config user.name e2e
     git add -A
