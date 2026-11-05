@@ -36,6 +36,16 @@ let
     # The appliance disables global DHCP (real hw declares per-interface);
     # the VM's virtio NIC has no profile entry, so DHCP must come back on.
     networking.useDHCP = nixpkgs.lib.mkForce true;
+    # DHCP hands out slirp's DNS proxy (10.0.2.3), which forwards to the
+    # host's resolver — not always reachable from qemu (a userspace resolver
+    # like tailscaled's 100.100.100.100 breaks it; observed as k3s unable to
+    # pull images: "lookup registry-1.docker.io: no such host"). The VM pulls
+    # from the internet anyway; a public resolver rides slirp's NAT, which
+    # works regardless of the host's DNS setup.
+    networking.nameservers = [
+      "1.1.1.1"
+      "8.8.8.8"
+    ];
 
     # The device under test shipped at v0.3.5 — the node config models the
     # baseline generation the installer left behind.
