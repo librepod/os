@@ -158,7 +158,8 @@
         nixpkgs.legacyPackages.x86_64-linux.callPackage ./pkgs/librepod-install
           { };
 
-      # E2E (KVM): nix build .#updates-e2e — NOT in checks.*; release-stable.yml gates releases on it
+      # E2E (KVM): nix build .#updates-e2e — NOT in checks.*, and releases don't wait for it:
+      # run it before tagging (locally, or Actions → Updates E2E; manual only, about an hour)
       updates-e2e = nixpkgs.legacyPackages.x86_64-linux.callPackage ./checks/e2e {
         inherit self nixpkgs;
       };
@@ -172,6 +173,10 @@
       checks.x86_64-linux =
         let
           pkgs = nixpkgs.legacyPackages.x86_64-linux;
+          # Every profile under hw/, so a new one can't skip the eval gates.
+          hwProfiles = builtins.attrNames (
+            nixpkgs.lib.filterAttrs (_: type: type == "directory") (builtins.readDir ./hw)
+          );
         in
         {
           # Basic smoke test: evaluate the module list to catch syntax/import errors.
@@ -201,9 +206,9 @@
                 # Forces full evaluation of the system, then discards the
                 # result: a .drv path in an env var becomes an input drv,
                 # which would make this check BUILD the system.
-                forcedEval = builtins.deepSeq [
-                  (evalHW ./hw/lenovo-m710q).config.system.build.toplevel.drvPath
-                ] "";
+                forcedEval = builtins.deepSeq (map (
+                  hw: (evalHW (./hw + "/${hw}")).config.system.build.toplevel.drvPath
+                ) hwProfiles) "";
               }
               ''
                 echo "hw profiles evaluate — check passed."
@@ -230,10 +235,10 @@
                 # Forces full evaluation of the appliance; result discarded
                 # so no .drv path leaks into env (would make this BUILD it).
                 # Both device forms: profile name and module path.
-                forcedEval = builtins.deepSeq [
-                  (mk "lenovo-m710q").config.system.build.toplevel.drvPath
-                  (mk ./hw/lenovo-m710q).config.system.build.toplevel.drvPath
-                ] "";
+                forcedEval = builtins.deepSeq (nixpkgs.lib.concatMap (hw: [
+                  (mk hw).config.system.build.toplevel.drvPath
+                  (mk (./hw + "/${hw}")).config.system.build.toplevel.drvPath
+                ]) hwProfiles) "";
               }
               ''
                 echo "mkDevice evaluates for both device forms — check passed."
