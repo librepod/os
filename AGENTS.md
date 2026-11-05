@@ -33,18 +33,18 @@ nix fmt -- --check
 ### Key Module Interactions
 
 - **k3s** — Pinned to a specific nixpkgs commit via `k3s-nixpkgs` input; accepts `k3s-nixpkgs` via `specialArgs`. Imports `coredns.nix` which patches CoreDNS to forward `libre.pod`, `librepod.dev`, and `librepod.local` zones to the host's Unbound.
-- **nfs** — Exports `/exports/k3s` (bind-mounted from `/mnt/k3s`) for K3S persistent volumes.
+- **nfs** — Exports `/exports/k3s` (bind-mounted from `/mnt/k3s`) for K3S persistent volumes, and turns off k3s's built-in local-storage (`services.k3s.disable`). A replacement storage module must carry that line too.
 - **duplicati** — Uses a strategy pattern: `default.nix` imports either `per-pvc.nix` or `single.nix`. Has a `services.duplicati.k3sPostBackupReconcile` option supporting `argocd`, `snapshot`, or `fluxcd` reconciliation modes.
 - **gobackup** — Self-packages GoBinary (`package.nix`), generates YAML config from NixOS options via `lib.generators.toYAML`, and creates per-model systemd services/timers.
 - **gitolite** — Three chained systemd services: `gitolite-init` (keygen + setup) → `gitolite-user-setup` (SSH config + clone) → `gitolite-flux-k8s-secret` (provisions K8S secret for Flux).
 
 ### Device Profiles
 
-Device profiles in `devices/` aggregate modules via `imports`. Each device provides `boot.nix` (bootloader/kernel), `hardware-configuration.nix` (generated), and `default.nix` (module composition). Some modules require explicit `import` with arguments (e.g., `k3s` and `common` need `{ inherit config pkgs lib; }`).
+A device is `lib.mkDevice { name, version, device, modules }`: the shared base stack (`applianceModules` in `flake.nix`, which the E2E VM runs too), plus a hardware profile from `hw/<name>/` (boot loader, kernel, hardware facts) or any module path, plus the device's own modules (install-day facts like the disk layout and `stateVersion`, then identity). `librepod-install` (`pkgs/librepod-install`) writes the device flake in `/etc/nixos` that calls it; the updater repins that flake's `librepod` input.
 
 ## Nix Style
 
-- Uses `nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11"` (release channel, not unstable).
+- Uses `nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05"` (release channel, not unstable).
 - All packages use `allowUnfree = false`.
 - Scripts use `pkgs.writeShellApplication` with explicit `runtimeInputs` rather than `buildInputs` or ad-hoc PATH manipulation.
 - `lib.mkDefault` is used for values that consumers should override (e.g., disk device in disko, hostname in networking).

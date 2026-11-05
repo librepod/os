@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ lib, pkgs, ... }:
 {
   environment.variables = {
     EDITOR = "nvim";
@@ -36,12 +36,21 @@
   # cycle — into an automatic reboot. No-op on hosts without /dev/watchdog.
   systemd.settings.Manager.RuntimeWatchdogSec = "30s";
   # Reboot 10s after a kernel panic instead of hanging on the panic screen.
-  boot.kernel.sysctl."kernel.panic" = 10;
+  # On the command line, not sysctl, so it covers stage 1 too: with
+  # boot.panic_on_fail a failed stage 1 (root disk missing, bad initrd)
+  # panics instead of sitting in emergency mode, so a bad trial boot falls
+  # back to the previous generation by itself.
+  boot.kernelParams = [
+    "panic=10"
+    "boot.panic_on_fail"
+  ];
 
   # Always specify a system state version that matches the starting version of
   # Nixpkgs for that machine and never change it afterwards. In other words, even if
   # you upgrade Nixpkgs later on you would keep the state version the same.
   # Nixpkgs uses the state version to migrate your NixOS system because in order to
   # migrate your system each migration needs to know where your system started from.
-  system.stateVersion = "21.11";
+  # Devices set up before librepod-install run on this. The installer writes the
+  # release's NixOS version into install.nix instead, which wins.
+  system.stateVersion = lib.mkDefault "21.11";
 }

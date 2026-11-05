@@ -42,6 +42,8 @@ let
             ethtool
             iperf3
             vim
+            # LibrePod appliance installer (generates device flake, disko, nixos-install)
+            (callPackage ../../pkgs/librepod-install { })
           ]
           ++ cfg.extraPackages;
 

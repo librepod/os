@@ -32,7 +32,7 @@
     # }];
   };
 
-  nixpkgs.config = {
-    allowUnfree = false;
-  };
+  # NOTE: no nixpkgs.config here — restating defaults (allowUnfree=false is
+  # nixpkgs' default) breaks runNixOSTest nodes, which pin nixpkgs.config
+  # read-only (types.unique rejects any second definition).
 }
