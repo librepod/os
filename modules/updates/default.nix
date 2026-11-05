@@ -43,6 +43,8 @@ in
       after = [
         "network-online.target"
         "k3s.service"
+        # Never alongside it: both clear up update-pending.
+        "librepod-update-sentinel.service"
       ];
       wants = [ "network-online.target" ];
       environment.LIBREPOD_STATE_DIR = stateDir;

@@ -126,7 +126,7 @@ pkgs.runCommand "updater-test"
     booted v0.3.5
     echo '{}' > "$FLAKE/flake.lock"
     export LIBREPOD_FLAKE_DIR="$FLAKE" LIBREPOD_STATE_DIR="$STATE" \
-           LIBREPOD_NODE_NAME="pod-test"
+           LIBREPOD_NODE_NAME="pod-test" LIBREPOD_BOOT_ID="boot-1"
 
     bash "$UPDATER"
 
@@ -169,7 +169,7 @@ pkgs.runCommand "updater-test"
     # 'from' resolved: a relative link would never match the booted system.
     jq -e --arg old "$STUBS/old-system" --arg new "$STUBS/fake-out" \
       '.phase == "trial" and .from == $old and .to == $new
-       and .version == "v9.9.9" and .requestId == 2' "$STATE/update-pending" >/dev/null \
+       and .version == "v9.9.9" and .requestId == 2 and .bootId == "boot-1"' "$STATE/update-pending" >/dev/null \
       || { echo "FAIL: update-pending wrong: $(cat "$STATE/update-pending")"; exit 1; }
 
     # ---- scenario 3: the owner's downgrade request is refused ---------------
@@ -408,6 +408,30 @@ pkgs.runCommand "updater-test"
     bash "$UPDATER"
     grep -qF 'state\": \"failed' "$LOG" && grep -qF 'observedRequestId\": 17' "$LOG" \
       || { echo "FAIL: request 17 was used up with no final state"; exit 1; }
+
+    # ---- scenario 21: staged on this boot, never rebooted into → reboot ------
+    : > "$LOG"
+    jq -nc --arg to "$STUBS/fake-out" '{to:$to, version:"v9.9.9", phase:"trial", bootId:"boot-1"}' > "$STATE/update-pending"
+    FAKE_SENTINEL=inactive bash "$UPDATER"   # killed between `report verifying` and its reboot
+    grep -q "systemctl reboot" "$LOG" \
+      || { echo "FAIL: a trial its updater never rebooted into was left in flight"; exit 1; }
+    : > "$LOG"
+    LIBREPOD_BOOT_ID=boot-2 bash "$UPDATER"   # a later boot: the sentinel's to resolve
+    ! grep -q "systemctl reboot" "$LOG" \
+      || { echo "FAIL: rebooted for an update staged on an earlier boot"; exit 1; }
+
+    # ---- scenario 22: the sentinel died after its verdict → sent, cleared ---
+    : > "$LOG"
+    mkdir -p "$STATE/staged"
+    jq -nc '{version:"v9.9.9", phase:"trial", bootId:"boot-0",
+             verdict:{state:"rolled_back", detail:"v9.9.9 failed its trial boot (unhealthy)"}}' > "$STATE/update-pending"
+    FAKE_SENTINEL=failed bash "$UPDATER"
+    grep -qF 'state\": \"rolled_back' "$LOG" && grep -qF '(unhealthy)' "$LOG" \
+      || { echo "FAIL: the sentinel's verdict was not sent"; exit 1; }
+    test ! -e "$STATE/update-pending" && test ! -e "$STATE/staged" \
+      || { echo "FAIL: update-pending or the staged copy left behind"; exit 1; }
+    ! grep -q "systemctl reboot\|interrupted" "$LOG" \
+      || { echo "FAIL: a resolved update was rebooted for, or read as interrupted"; exit 1; }
 
     echo "updater scenarios passed"
     touch $out

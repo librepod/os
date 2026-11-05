@@ -54,10 +54,10 @@ commit_trial() {
     "$SYSTEMCTL" reboot
     exit 0
   fi
+  set_verdict "done" "update to $VERSION verified healthy"
   # If this label is dropped, the updater's next-poll reconcile_label heals it.
   kctl label node "$NODE_NAME" "librepod.os/version=$VERSION" --overwrite >/dev/null 2>&1 || true
-  report "done" "update to $VERSION verified healthy"
-  rm -f "$PENDING"
+  send_verdict
 }
 
 if [ "$PHASE" = committing ]; then
@@ -74,16 +74,14 @@ if [ "$BOOTED" != "$TO" ]; then
     # NEW records why it gave up; no reason means it never got that far
     # (panic, hang, power cut).
     reason="$(jq -r '.reason // "trial-did-not-finish"' "$PENDING")"
-    report rolled_back "$VERSION failed its trial boot ($reason); back on $(current_version)"
+    set_verdict rolled_back "$VERSION failed its trial boot ($reason); back on $(current_version)"
   else
     # A power cut before the trial boot: nothing ran, so nothing failed. A cut
     # inside start_trial can leave the profile on NEW; FROM is the boot default.
     "$NIX_ENV_BIN" -p "$PROFILE" --set "$FROM"
-    report idle "update to $VERSION never started; cleared"
+    set_verdict idle "update to $VERSION never started; cleared"
   fi
-  # Staged copy first: the updater reads one without update-pending as a build
-  # that never finished.
-  rm -rf "$STAGED" "$PENDING"
+  send_verdict
   exit 0
 fi
 

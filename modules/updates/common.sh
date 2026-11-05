@@ -23,8 +23,8 @@ CURRENT_SYSTEM="${LIBREPOD_CURRENT_SYSTEM:-/run/current-system}"
 # The updater repins and builds in this copy of FLAKE_DIR; the sentinel
 # copies the pin back only when the update commits.
 STAGED="$STATE_DIR/staged"
-# The update in flight: {from, to, version, requestId, phase}, where phase
-# goes staged → trial → committing.
+# The update in flight: {from, to, version, requestId, phase, bootId}, where
+# phase goes staged → trial → committing; the sentinel adds its verdict last.
 PENDING="$STATE_DIR/update-pending"
 
 # shellcheck disable=SC2086  # KUBECTL may be multiple words ("k3s kubectl")
@@ -55,3 +55,12 @@ report() { # state, detail — best-effort telemetry; cv from the booted system
 write_state() { echo "$2" > "$1.new" && sync "$1.new" && mv -f "$1.new" "$1" && sync "$STATE_DIR"; } # file in STATE_DIR, content
 write_pending() { write_state "$PENDING" "$1"; }
 set_phase() { write_pending "$(jq -c --arg p "$1" '.phase = $p' "$PENDING")"; }
+
+# The sentinel's verdict is on disk before it is sent: if the sentinel dies
+# before clearing up, the updater's next poll sends it again.
+set_verdict() { write_pending "$(jq -c --arg s "$1" --arg d "$2" '.verdict = {state: $s, detail: $d}' "$PENDING")"; } # state, detail
+send_verdict() {
+  report "$(jq -r '.verdict.state' "$PENDING")" "$(jq -r '.verdict.detail' "$PENDING")"
+  # Staged copy first: without update-pending it reads as an interrupted build.
+  rm -rf "$STAGED" "$PENDING"
+}

@@ -47,6 +47,8 @@ pkgs.runCommand "sentinel-test"
     echo "k3s $*" >> "$CALLS_LOG"
     case "$*" in
       *"get node"*) cat "$HEALTH_FILE" 2>/dev/null || true;;
+      # killed (a hung kubectl, OOM) as it sends its verdict
+      *"patch"*) [ -z "$FAKE_KILL_AT_REPORT" ] || kill -9 $PPID;;
     esac
     EOF
     chmod +x "$ROOT/bin/k3s"
@@ -234,6 +236,14 @@ pkgs.runCommand "sentinel-test"
       || { echo "FAIL: not reported as failed, or rebooted into an unknown default"; exit 1; }
     jq -e '.phase == "committing"' "$ROOT/state/update-pending" >/dev/null \
       || { echo "FAIL: the next boot can't retry the commit"; exit 1; }
+
+    # ---- scenario 9: killed as it sends its verdict → the verdict is kept --
+    echo "True" > "$ROOT/health"
+    boot new trial
+    FAKE_KILL_AT_REPORT=1 bash "$SENTINEL" || true
+    jq -e '.verdict == {state: "done", detail: "update to v9.9.9 verified healthy"}' \
+      "$ROOT/state/update-pending" >/dev/null \
+      || { echo "FAIL: killed before clearing up, and the updater has no verdict to send"; exit 1; }
 
     echo "sentinel scenarios passed"
     touch $out

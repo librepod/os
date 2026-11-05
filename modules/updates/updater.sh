@@ -3,6 +3,8 @@
 # (common.sh is prepended by modules/updates/default.nix.)
 
 BOOTCTL="${BOOTCTL:-bootctl}"
+# update-pending from this same boot means its updater died before the reboot.
+BOOT_ID="${LIBREPOD_BOOT_ID:-$(cat /proc/sys/kernel/random/boot_id)}"
 
 # The staged copy goes too: one left behind means a build that never finished.
 die() { report failed "$1"; rm -rf "$STAGED"; exit 1; }
@@ -19,12 +21,22 @@ reconcile_label() {
     || kctl label node "$NODE_NAME" "librepod.os/version=$cv" --overwrite >/dev/null 2>&1 || true
 }
 
+# The sentinel died between its verdict and clearing up (killed, OOM): finish
+# for it. The two never run at once (After= in default.nix).
+if [ -e "$PENDING" ] && jq -e '.verdict' "$PENDING" >/dev/null; then
+  send_verdict
+fi
+
 # An update is in flight (staged, or the sentinel is verifying it): stand
 # down, so a poll neither overwrites its status nor stages a second one on top.
 if [ -e "$PENDING" ]; then
+  # Staged on this boot, and no updater runs alongside another: the one that
+  # staged it died before its reboot. Reboot, as a power cut would.
+  if [ "$(jq -r '.bootId' "$PENDING")" = "$BOOT_ID" ]; then
+    "$SYSTEMCTL" reboot
   # The sentinel ends every trial. If it failed without a verdict (stopped at
   # its TimeoutStartSec, crashed), end the trial here: OLD is still the default.
-  if [ "$(readlink -f "$CURRENT_SYSTEM")" = "$(jq -r '.to' "$PENDING")" ] \
+  elif [ "$(readlink -f "$CURRENT_SYSTEM")" = "$(jq -r '.to' "$PENDING")" ] \
      && [ "$(jq -r '.phase' "$PENDING")" != committing ] \
      && [ "$("$SYSTEMCTL" is-active librepod-update-sentinel || true)" = failed ]; then
     write_pending "$(jq -c '.reason = "sentinel-failed"' "$PENDING")"
@@ -155,7 +167,8 @@ OUT="$("$NIX_BIN" build --out-link "$STAGED/result" --print-out-paths \
 # ---- 5. trial boot: the sentinel commits NEW or the next boot is OLD again ----
 FROM="$(readlink -f "$CURRENT_SYSTEM")"
 write_pending "$(jq -nc --arg from "$FROM" --arg to "$OUT" --arg v "$DESIRED" --argjson rid "$REQ" \
-  '{from:$from, to:$to, version:$v, requestId:$rid, phase:"staged", stagedAt:(now|todate)}')"
+  --arg boot "$BOOT_ID" \
+  '{from:$from, to:$to, version:$v, requestId:$rid, phase:"staged", stagedAt:(now|todate), bootId:$boot}')"
 # The profile may be left on NEW (the second --set failed): FROM again, which
 # is a no-op when it already names FROM.
 start_trial "$FROM" "$OUT" || {

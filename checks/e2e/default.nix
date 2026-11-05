@@ -251,7 +251,9 @@ hostPkgs.testers.runNixOSTest {
     assert old in boot_entry()  # OLD stays the default
     assert "${topPath.v0_4_0}" in oneshot_entry()  # the next boot runs NEW
     assert pending()["phase"] == "trial"
-    start_and_reboot("systemctl reboot")
+    # stage_only is an updater that died before its reboot: the next poll
+    # finds the trial staged on this boot and reboots into it.
+    start_and_reboot("systemctl start librepod-updater.service")
 
     wait_healthy()
     wait_state("done", timeout=300)
