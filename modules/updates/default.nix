@@ -15,6 +15,7 @@ let
         nix
         jq
         k3s
+        coreutils # timeout, stat, date
         config.systemd.package # bootctl, matching the running systemd
       ];
     })

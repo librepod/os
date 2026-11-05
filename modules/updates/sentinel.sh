@@ -44,9 +44,11 @@ take_pin() { # dir holding flake.nix and flake.lock
 abort_commit() {
   { "$NIX_ENV_BIN" -p "$PROFILE" --set "$FROM" && "$FROM/bin/switch-to-configuration" boot; } \
     || { report failed "could not write the boot entries for $VERSION, nor put the old ones back"; exit 1; }
-  # A try before a power cut may have taken the new pin already.
+  # A try before a power cut may have taken the new pin already. A failed
+  # restore (full disk) must not die silently before the reboot below.
   if [ -d "$PIN_BEFORE" ]; then
-    take_pin "$PIN_BEFORE"
+    take_pin "$PIN_BEFORE" \
+      || report failed "could not restore the device pin after aborting $VERSION"
   fi
   write_pending "$(jq -c '.phase = "trial" | .reason = "commit-failed"' "$PENDING")"
   "$SYSTEMCTL" reboot
@@ -62,7 +64,9 @@ commit_trial() {
   # Only now does FLAKE_DIR take the new pin. The staged copy stays until the
   # verdict is sent: until then a cut redoes this commit, or aborts it.
   if [ -d "$STAGED" ]; then
-    take_pin "$STAGED"
+    # A failed copy (full disk) would otherwise kill the sentinel before any
+    # verdict; abort ends the trial like a commit that cannot proceed.
+    take_pin "$STAGED" || abort_commit
   fi
   if [ "$BOOTED" != "$TO" ]; then
     # A power cut mid-commit brought back OLD; NEW is the default now.
@@ -93,7 +97,10 @@ if [ "$BOOTED" != "$TO" ]; then
   else
     # A power cut before the trial boot: nothing ran, so nothing failed. A cut
     # inside start_trial can leave the profile on NEW; FROM is the boot default.
-    "$NIX_ENV_BIN" -p "$PROFILE" --set "$FROM"
+    # A profile that cannot be reset (corrupt, unwritable) must not wedge the
+    # sentinel: the boot default is already FROM, and any later update re-sets it.
+    "$NIX_ENV_BIN" -p "$PROFILE" --set "$FROM" \
+      || echo "[librepod] could not reset the profile; the boot default is unaffected"
     set_verdict idle "update to $VERSION never started; cleared"
   fi
   send_verdict

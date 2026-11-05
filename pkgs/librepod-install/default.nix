@@ -2,6 +2,7 @@
   writeShellApplication,
   curl,
   jq,
+  nix,
   disko,
   nixos-install-tools,
 }:
@@ -11,6 +12,7 @@ writeShellApplication {
   runtimeInputs = [
     curl
     jq
+    nix
     disko
     nixos-install-tools
   ];

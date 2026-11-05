@@ -53,14 +53,24 @@ if [ -e "$PENDING" ]; then
   # staged it died before its reboot. Reboot, as a power cut would.
   if [ "$(jq -r '.bootId' "$PENDING")" = "$BOOT_ID" ]; then
     "$SYSTEMCTL" reboot
-  # The sentinel ends every update. It failed without a verdict (stopped at
-  # its TimeoutStartSec, crashed, a full disk):
-  elif [ "$("$SYSTEMCTL" is-active librepod-update-sentinel || true)" = failed ]; then
+  # The sentinel ends every update. It stopped without leaving a verdict —
+  # failed (TimeoutStartSec, a crash, a full disk) or exited 0 before its
+  # reboot landed (inactive). Activating/active means it is still working:
+  # rebooting under it would kill a healthy check.
+  elif { sentinel_state="$("$SYSTEMCTL" is-active librepod-update-sentinel || true)"; \
+         [ "$sentinel_state" = failed ] || [ "$sentinel_state" = inactive ]; }; then
     if [ "$(readlink -f "$CURRENT_SYSTEM")" = "$(jq -r '.to' "$PENDING")" ] \
        && [ "$(jq -r '.phase' "$PENDING")" != committing ]; then
       # on the trial, end it here: OLD is still the default.
       write_pending "$(jq -c '.reason = "sentinel-failed"' "$PENDING")"
       "$SYSTEMCTL" reboot
+    elif [ $(( $(date +%s) - $(stat -c %Y "$PENDING") )) -gt 86400 ]; then
+      # Retries are for transient failures. A day without progress (a full
+      # disk, a corrupt profile) means the retry cannot help: end it loudly
+      # instead of restarting the sentinel into the same death every poll.
+      report failed "update stuck in flight for over a day; quarantined (see $PENDING.bad)"
+      mv "$PENDING" "$PENDING.bad"
+      rm -rf "$STAGED"
     else
       # elsewhere its steps are safe to repeat: run it again, once a poll.
       "$SYSTEMCTL" start --no-block librepod-update-sentinel
@@ -183,7 +193,8 @@ start_trial() { # old toplevel, new toplevel
 
 # ---- 4. build (no live switch) -------------------------------------------------
 # The out-link is NEW's GC root until start_trial gives it a profile generation;
-# it goes with the staged copy.
+# it goes with the staged copy. (An indirect root: nix registers it under
+# /nix/var/nix/gcroots/auto/, so the GC sees it wherever the link lives.)
 OUT="$("$NIX_BIN" build --out-link "$STAGED/result" --print-out-paths \
   "$STAGED#nixosConfigurations.$NODE_NAME.config.system.build.toplevel")" \
   || die "build failed for $DESIRED"
