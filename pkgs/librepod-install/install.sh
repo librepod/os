@@ -99,7 +99,13 @@ SV="$("$NIX_BIN" --extra-experimental-features "nix-command flakes" eval --raw \
 write_facts "system.stateVersion = \"$SV\";"
 
 echo "==> partitioning + formatting via disko (DESTROYS the disk)"
-"$DISKO_BIN" --flake "$WORKDIR#$NAME" --mode destroy,format,mount --root-mountpoint "$MNT"
+# --yes-wipe-all-disks: disko ≥1.12 prompts for confirmation, which reads EOF
+# and aborts under headless SSH/no-TTY runs. The operator already chose the
+# disk (--disk / default nvme0n1) and this script prints its own destroy
+# warning; disko's prompt adds nothing but a brick for netboot installs.
+# Scope note: the flag covers only disks declared in disko.devices — the one
+# layout disk, never extra data disks the layout doesn't mention.
+"$DISKO_BIN" --flake "$WORKDIR#$NAME" --mode destroy,format,mount --root-mountpoint "$MNT" --yes-wipe-all-disks
 
 echo "==> installing NixOS"
 install -d -m 700 "$MNT/etc/nixos"

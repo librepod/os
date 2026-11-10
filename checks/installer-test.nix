@@ -59,7 +59,8 @@ pkgs.runCommand "installer-test"
       --device lenovo-m710q --name pod-test --os-tag v0.3.5 \
       --identity "$ROOT/identity/identity.nix"
 
-    grep -q "disko --flake .*#pod-test --mode destroy,format,mount --root-mountpoint $ROOT/mnt$" "$CALLS_LOG" \
+    # headless: the wipe must be auto-confirmed (disko ≥1.12 prompts otherwise)
+    grep -q "disko --flake .*#pod-test --mode destroy,format,mount --root-mountpoint $ROOT/mnt --yes-wipe-all-disks$" "$CALLS_LOG" \
       || { echo "FAIL: disko invocation wrong"; exit 1; }
     grep -q "nixos-install --root $ROOT/mnt --flake .*#pod-test --no-root-passwd" "$CALLS_LOG" \
       || { echo "FAIL: nixos-install invocation wrong"; exit 1; }
