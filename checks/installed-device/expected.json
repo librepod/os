@@ -17,7 +17,7 @@
     },
     "/exports/k3s": {
       "device": "/mnt/k3s",
-      "fsType": "none",
+      "fsType": "auto",
       "options": [
         "bind"
       ]
