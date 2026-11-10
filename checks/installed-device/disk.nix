@@ -33,6 +33,13 @@
 # }
 #
 # Example to create a bios compatible gpt partition
+#
+# Appliance layout: TWO disks by product contract — OS (disk.main, everything
+# the system is) + data (disk.data, everything the user ever keeps). PVs and
+# app data live at /mnt/k3s: the nfs module bind-mounts it to /exports/k3s,
+# which the marketplace's nfs-provisioner hands to PVCs. Both disks are
+# wiped at install; the installer records the concrete devices in the
+# device-owned install.nix (--disk / --data-disk).
 { lib, ... }:
 {
   disko.devices = {
@@ -63,6 +70,25 @@
             content = {
               type = "lvm_pv";
               vg = "pool";
+            };
+          };
+        };
+      };
+    };
+    disk.data = {
+      device = lib.mkDefault "/dev/sda";
+      type = "disk";
+      content = {
+        type = "gpt";
+        partitions = {
+          data = {
+            name = "data";
+            size = "100%";
+            content = {
+              type = "filesystem";
+              format = "ext4";
+              mountpoint = "/mnt/k3s";
+              mountOptions = [ "defaults" ];
             };
           };
         };

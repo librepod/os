@@ -52,7 +52,7 @@ Then configure your machine:
 | `ssh` | OpenSSH server with banner |
 | `networking` | IPv6 disabled, DHCP defaults |
 | `nix` | Nix GC, store optimization |
-| `disko` | GPT + LVM disk partitioning |
+| `disko` | Two-disk appliance layout: GPT+LVM OS disk, ext4 data disk at `/mnt/k3s` |
 | `k3s` | K3S Kubernetes server (pinned version) |
 | `frpc` | FRP tunnel client with `librepod.frpc` options |
 | `dns-server` | Unbound DNS for local domains |

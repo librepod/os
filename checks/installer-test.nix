@@ -86,6 +86,7 @@ pkgs.runCommand "installer-test"
       || { echo "FAIL: disk.nix is not the release's layout"; exit 1; }
     grep -qF 'imports = [ ./disk.nix ];' "$FACTS" \
       && grep -qF 'disko.devices.disk.main.device = "/dev/nvme0n1";' "$FACTS" \
+      && grep -qF 'disko.devices.disk.data.device = "/dev/sda";' "$FACTS" \
       && grep -qF 'system.stateVersion = "26.05";' "$FACTS" \
       || { echo "FAIL: install.nix wrong: $(cat "$FACTS")"; exit 1; }
     NIX_STATE_DIR="$ROOT/nix" nix-instantiate --store dummy:// --parse "$FACTS" >/dev/null \
@@ -110,6 +111,13 @@ pkgs.runCommand "installer-test"
       --identity "$ROOT/identity/identity.nix"
     grep -qF 'disko.devices.disk.main.device = "/dev/sda";' "$ROOT/mnt/etc/nixos/install.nix" \
       || { echo "FAIL: --disk not written to install.nix"; exit 1; }
+
+    # ---- scenario 3b: --data-disk for a two-NVMe machine ----------------------
+    bash "$INSTALL" \
+      --device lenovo-m710q --name pod-test --os-tag v0.3.5 --data-disk /dev/nvme1n1 \
+      --identity "$ROOT/identity/identity.nix"
+    grep -qF 'disko.devices.disk.data.device = "/dev/nvme1n1";' "$ROOT/mnt/etc/nixos/install.nix" \
+      || { echo "FAIL: --data-disk not written to install.nix"; exit 1; }
 
     # ---- scenario 4: a disk value that would break out of the Nix string -------
     : > "$CALLS_LOG"
