@@ -1,9 +1,12 @@
 { lib, pkgs, ... }:
 
 {
+  # fsType must stay at its default ("auto"): kubelet pods mount this export
+  # back over loopback NFS, so the mount is busy at runtime — any fstab change
+  # (even cosmetic, like fsType "auto"→"none") forces a restart that cannot
+  # succeed without a reboot. Frozen unless rebooting every device is fine.
   fileSystems."/exports/k3s" = {
     device = "/mnt/k3s";
-    fsType = "none";
     options = [ "bind" ];
   };
   # A fresh disk has no /mnt/k3s, and a bind mount from a missing source fails
