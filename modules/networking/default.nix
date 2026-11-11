@@ -23,4 +23,18 @@
     # TODO: Enable firewall and configure it properly
     firewall.enable = lib.mkDefault false;
   };
+
+  # mDNS: every appliance answers at <hostname>.local on the LAN
+  # (librepod-dev.local, librepod-m90q.local, ...). Per-device names only:
+  # a shared "librepod" alias would collide once two devices share a LAN —
+  # mDNS conflict resolution makes the winner nondeterministic.
+  services.avahi = {
+    enable = lib.mkDefault true;
+    nssmdns4 = true;
+    openFirewall = true;
+    publish = {
+      enable = true;
+      addresses = true;
+    };
+  };
 }

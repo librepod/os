@@ -50,12 +50,11 @@ Then configure your machine:
 | `common` | Base system (zsh/grml, neovim, git, jq, NTP) |
 | `users` | User management with `librepod.users` options |
 | `ssh` | OpenSSH server with banner |
-| `networking` | IPv6 disabled, DHCP defaults |
+| `networking` | IPv6 disabled, DHCP defaults, mDNS (`<hostname>.local` via avahi) |
 | `nix` | Nix GC, store optimization |
 | `disko` | Two-disk appliance layout: GPT+LVM OS disk, ext4 data disk at `/mnt/k3s` |
 | `k3s` | K3S Kubernetes server (pinned version) |
 | `frpc` | FRP tunnel client with `librepod.frpc` options |
-| `dns-server` | Unbound DNS for local domains |
 | `nfs` | NFS server for K3S persistent volumes |
 | `borgmatic` | Automated PVC backups with Borgmatic |
 | `gobackup` | Declarative backup with GoBackup |
