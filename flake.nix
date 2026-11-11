@@ -69,6 +69,7 @@
         self.nixosModules.k3s
         self.nixosModules.nfs
         self.nixosModules.image
+        self.nixosModules.identity
         # The data disk: the image-side twin of disko's disk.data.
         {
           fileSystems."/mnt/k3s" = {
@@ -106,6 +107,7 @@
         duplicati = import ./modules/duplicati;
         gitolite = import ./modules/gitolite;
         gobackup = import ./modules/gobackup;
+        identity = ./modules/identity;
         image = ./modules/image;
         k3s = import ./modules/k3s;
         netboot = import ./modules/netboot;
@@ -222,6 +224,12 @@
       # Local-only (KVM), throwaway: nix build .#ab-spike — A/B image updates with sysupdate
       ab-spike = nixpkgs.legacyPackages.x86_64-linux.callPackage ./checks/ab-spike { inherit nixpkgs; };
 
+      # Local-only (KVM): nix build .#image-e2e — the appliance image with its identity
+      # outside Nix, on a box with extra drives
+      image-e2e = nixpkgs.legacyPackages.x86_64-linux.callPackage ./checks/image-e2e {
+        inherit self nixpkgs;
+      };
+
       # Verify all modules can be evaluated without error.
       checks.x86_64-linux =
         let
@@ -309,8 +317,6 @@
                     pubring = pkgs.writeText "empty.pgp" "";
                     healthCheck = "${pkgs.coreutils}/bin/true";
                   };
-                  # shortcut: no login until modules/identity, which drops this
-                  users.allowNoPasswordLogin = true;
                 };
             in
             pkgs.runCommand "image-profiles-eval"
