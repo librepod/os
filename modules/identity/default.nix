@@ -22,9 +22,7 @@
 
   # Key and password. modules/ssh's "publickey password" means key OR
   # password, which would make the generic password a LAN login.
-  services.openssh.extraConfig = lib.mkForce ''
-    AuthenticationMethods publickey,password
-  '';
+  services.openssh.settings.AuthenticationMethods = "publickey,password";
 
   users.defaultUserShell = pkgs.zsh;
   # initialPassword applies once, when the account is created on first boot.

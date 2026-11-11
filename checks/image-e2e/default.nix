@@ -100,10 +100,11 @@ hostPkgs.testers.runNixOSTest {
         memorySize = 4096;
         # The OS disk keeps bootindex=1: the boot entry the installer registers.
         qemu.options = [
-          "-drive if=none,id=data,format=qcow2,file=$DATA_DISK"
-          "-device nvme,serial=data,drive=data"
+          # The extra NVMe comes first: the data disk is not nvme0n1.
           "-drive if=none,id=extra,format=qcow2,file=$EXTRA_DISK"
           "-device nvme,serial=extra,drive=extra"
+          "-drive if=none,id=data,format=qcow2,file=$DATA_DISK"
+          "-device nvme,serial=data,drive=data"
           "-device ahci,id=ahci"
           "-drive if=none,id=foreign,format=qcow2,file=$FOREIGN_DISK"
           "-device ide-hd,bus=ahci.0,serial=foreign,drive=foreign"
@@ -198,6 +199,8 @@ hostPkgs.testers.runNixOSTest {
           for path in ["/", "/boot", "/nix/store"]:
               assert disk_of(path) == "root", (path, disk_of(path))
           assert disk_of("/mnt/k3s") == "data", disk_of("/mnt/k3s")
+          # a fixed /dev/nvme0n1 name would have found the blank extra NVMe
+          assert pod.succeed("lsblk -dno NAME,SERIAL | grep -w extra").startswith("nvme0n1")
 
       with subtest("hostname comes from /etc/hostname"):
           assert pod.succeed("hostname").strip() == "pod-image", pod.succeed("hostname")
@@ -216,6 +219,10 @@ hostPkgs.testers.runNixOSTest {
               "chmod 600 ~librepod/.ssh/authorized_keys",
           )
           pod.succeed(ssh.format(pw="librepod", opts="-i /root/key"))
+          # and can copy files: scp needs sshd's sftp subsystem
+          pod.succeed("sshpass -p librepod scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+                      " -i /root/key librepod@localhost:/etc/hostname /tmp/copy")
+          assert pod.succeed("cat /tmp/copy").strip() == "pod-image"
 
       with subtest("extra NVMe, SATA and USB drives change nothing"):
           check_drives()
@@ -223,6 +230,11 @@ hostPkgs.testers.runNixOSTest {
       with subtest("PVs land on the data disk"):
           assert pod.succeed("findmnt -no PARTLABEL /mnt/k3s").strip() == "librepod-data"
           pod.succeed("findmnt /exports/k3s")
+
+      with subtest("avahi is the only mDNS responder"):
+          # <name>.local is how owners find the device; a second stack makes it unreliable
+          responders = pod.succeed("ss -Hulpn 'sport = :5353'")
+          assert "systemd-resolve" not in responders, responders
 
       with subtest("the k3s node is named after the device"):
           pod.wait_for_unit("k3s.service", timeout=600)
