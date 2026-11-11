@@ -79,6 +79,7 @@
         frpc = import ./modules/frpc;
         gitolite = import ./modules/gitolite;
         gobackup = import ./modules/gobackup;
+        image = ./modules/image;
         k3s = import ./modules/k3s;
         netboot = import ./modules/netboot;
         networking = import ./modules/networking;

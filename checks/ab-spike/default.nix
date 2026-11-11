@@ -23,7 +23,7 @@ let
   behaviors = {
     good = { };
     unhealthy = {
-      librepod.ab.healthCheck = lib.mkForce "${hostPkgs.coreutils}/bin/false";
+      librepod.image.healthCheck = lib.mkForce "${hostPkgs.coreutils}/bin/false";
     };
     # Before the health gate, so the boot is never blessed.
     panic = {
@@ -71,10 +71,10 @@ hostPkgs.testers.runNixOSTest {
   nodes.machine =
     { pkgs, extendModules, ... }:
     {
-      imports = [ ./image.nix ];
+      imports = [ ../../modules/image ];
       system.stateVersion = "26.05";
       system.image.version = lib.mkDefault "1";
-      librepod.ab = {
+      librepod.image = {
         updateUrl = "http://server/";
         pubring = "${trusted}/pubring.pgp";
         healthCheck = lib.mkDefault "${pkgs.coreutils}/bin/true";

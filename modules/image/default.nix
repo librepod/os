@@ -1,6 +1,5 @@
-# checks/ab-spike/image.nix — A/B appliance image (spike): repart layout,
-# sysupdate transfers, boot counting, health gate, panic/watchdog reboots.
-# The candidate for a module once the spike passes.
+# modules/image — the appliance as an A/B disk image: repart layout, sysupdate
+# transfers, boot counting, health gate, panic/watchdog reboots.
 # Design: docs/superpowers/specs/2026-11-11-ab-image-updates-design.md
 {
   config,
@@ -10,7 +9,7 @@
   ...
 }:
 let
-  cfg = config.librepod.ab;
+  cfg = config.librepod.image;
   inherit (config.system.image) id version;
   inherit (pkgs.stdenv.hostPlatform) efiArch;
   slot = {
@@ -26,7 +25,7 @@ in
     (modulesPath + "/profiles/image-based-appliance.nix")
   ];
 
-  options.librepod.ab = {
+  options.librepod.image = {
     updateUrl = lib.mkOption {
       type = lib.types.str;
       description = "Folder holding SHA256SUMS, SHA256SUMS.gpg and the release files.";
@@ -55,13 +54,14 @@ in
     system.image.id = "librepod";
     boot.loader.grub.enable = false;
 
+    # Prefixed labels: a generic "root" or "esp" collides with any plugged-in disk.
     fileSystems = {
       "/" = {
-        device = "/dev/disk/by-partlabel/root";
+        device = "/dev/disk/by-partlabel/librepod-root";
         fsType = "ext4";
       };
       "/boot" = {
-        device = "/dev/disk/by-partlabel/esp";
+        device = "/dev/disk/by-partlabel/librepod-esp";
         fsType = "vfat";
       };
       # The version is baked into this UKI's initrd: each UKI mounts its own slot.
@@ -85,7 +85,7 @@ in
           };
           repartConfig = {
             Type = "esp";
-            Label = "esp";
+            Label = "librepod-esp";
             Format = "vfat";
             SizeMinBytes = "256M";
             SplitName = "-";
@@ -109,7 +109,7 @@ in
         root.repartConfig = {
           Type = "root";
           Format = "ext4";
-          Label = "root";
+          Label = "librepod-root";
           Minimize = "off";
           SizeMinBytes = "512M";
           SizeMaxBytes = "512M";
