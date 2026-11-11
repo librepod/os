@@ -54,7 +54,6 @@ Then configure your machine:
 | `nix` | Nix GC, store optimization |
 | `disko` | Two-disk appliance layout: GPT+LVM OS disk, ext4 data disk at `/mnt/k3s` |
 | `k3s` | K3S Kubernetes server (pinned version) |
-| `frpc` | FRP tunnel client with `librepod.frpc` options |
 | `nfs` | NFS server for K3S persistent volumes |
 | `borgmatic` | Automated PVC backups with Borgmatic |
 | `gobackup` | Declarative backup with GoBackup |
@@ -85,7 +84,7 @@ plus per-device identity — used by the small flake an installed device owns at
       device = "lenovo-m710q";          # ./hw/<name>
       modules = [
         ./install.nix   # disk layout + stateVersion, frozen on install day
-        ./identity.nix  # users, keys, frpc — never hardware
+        ./identity.nix  # users, keys — never hardware
       ];
     };
   };

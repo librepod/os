@@ -26,7 +26,7 @@ nix fmt -- --check
 
 ### Module Conventions
 
-- **Option-based modules** (`frpc`, `users`) define custom options under the `librepod.*` namespace and use `lib.mkIf cfg.enable` to conditionally enable config.
+- **Option-based modules** (`users`) define custom options under the `librepod.*` namespace and use `lib.mkIf cfg.enable` to conditionally enable config.
 - **Direct-config modules** (`nfs`, `networking`, `ssh`, `nix`, `common`, `dns-server`) configure NixOS options directly with no custom option namespace — they activate on import.
 - **Imports-based modules** (`duplicati`, `gobackup`, `gitolite`) are more complex, often defining multiple systemd services.
 

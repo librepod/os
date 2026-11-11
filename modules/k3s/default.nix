@@ -81,14 +81,12 @@ in
   # 1080 - xray/v2ray proxy port
   # 6443 - Kubernetes API Server
   # 10250 - Kubelet metrics
-  # 7400 - frpc admin port
   networking.firewall.allowedTCPPorts = [
     80
     443
     1080
     6443
     10250
-    7400
   ];
   networking.firewall.allowedUDPPorts = [ 51820 ];
   # networking.firewall.allowedTCPPortRanges = { from = 4000; to = 4007; };

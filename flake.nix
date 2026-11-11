@@ -76,7 +76,6 @@
         disko = ./modules/disko;
         borgmatic = import ./modules/borgmatic;
         duplicati = import ./modules/duplicati;
-        frpc = import ./modules/frpc;
         gitolite = import ./modules/gitolite;
         gobackup = import ./modules/gobackup;
         image = ./modules/image;
@@ -123,7 +122,7 @@
         #   device  — supported profile name under ./hw (string), or any
         #             hardware module path (unsupported/personal devices)
         #   modules — install-day facts (disk layout, stateVersion) and
-        #             identity modules (users, frpc, per-device bits)
+        #             identity modules (users, per-device bits)
         mkDevice =
           {
             name,
