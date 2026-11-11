@@ -169,6 +169,9 @@
         inherit nixpkgs;
       };
 
+      # Local-only (KVM), throwaway: nix build .#ab-spike — A/B image updates with sysupdate
+      ab-spike = nixpkgs.legacyPackages.x86_64-linux.callPackage ./checks/ab-spike { inherit nixpkgs; };
+
       # Verify all modules can be evaluated without error.
       checks.x86_64-linux =
         let
