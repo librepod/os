@@ -27,27 +27,19 @@
 }:
 
 let
-  # Pre/post backup scripts (imported from main module)
-  preBackupScript = pkgs.writeShellApplication {
-    name = "duplicati-pre-backup";
-    runtimeInputs = with pkgs; [
-      k3s
-      fluxcd
-      jq
-      coreutils
-    ];
-    text = builtins.readFile ./scripts/pre-backup.sh;
+  # Shared pre/post-backup hooks + boot recovery unit (issue #12), built for
+  # this tool by modules/common/backup-hooks.
+  backupHooks = import ../common/backup-hooks {
+    inherit pkgs;
+    toolName = "duplicati";
+    stateFilePath = "/var/lib/duplicati/scaled-deployments.txt";
+    backupUnitName = "duplicati-backup-k3s-per-pvc.service";
   };
 
-  postBackupScript = pkgs.writeShellApplication {
-    name = "duplicati-post-backup";
-    runtimeInputs = with pkgs; [
-      k3s
-      fluxcd
-      coreutils
-    ];
-    text = builtins.readFile ./scripts/post-backup.sh;
-  };
+  inherit (backupHooks)
+    preBackupScript
+    postBackupScript
+    ;
 
   # Per-PVC backup script
   # Discovers all PVCs in Kubernetes and creates a separate backup for each one
@@ -87,8 +79,6 @@ in
       User = "root";
       # Use the per-PVC backup script which handles PVC discovery and backup
       ExecStart = "${perPvcBackupScript}/bin/duplicati-backup-per-pvc";
-      # Create state file directory for pre-backup replica tracking
-      ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p /run/duplicati";
       # Ensure backup directory exists
       WorkingDirectory = "/var/lib/duplicati";
       # Security hardening - allow read access to all PVCs
@@ -105,8 +95,18 @@ in
     after = [
       "k3s.service"
       "network-online.target"
+      # Pure ordering (no wants): serialize with boot recovery in case the
+      # Persistent timer fires a catch-up backup while recovery is restoring.
+      "duplicati-recovery.service"
     ];
   };
+
+  # Boot-time recovery from a reboot during the backup window (issue #12):
+  # a surviving state file means a backup was interrupted mid-run — the fleet
+  # is at 0 replicas with Flux suspended. The shared recovery unit reruns
+  # post-backup (guarding against a mid-backup `nixos-rebuild switch`) and
+  # retries until the restore fully succeeds.
+  systemd.services.duplicati-recovery = backupHooks.recoveryService;
 
   # Systemd timer for nightly per-PVC backups
   systemd.timers.duplicati-backup-k3s-per-pvc = {
