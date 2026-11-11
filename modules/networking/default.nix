@@ -1,4 +1,8 @@
-{ lib, ... }:
+{
+  config,
+  lib,
+  ...
+}:
 
 {
   networking = {
@@ -22,5 +26,24 @@
 
     # TODO: Enable firewall and configure it properly
     firewall.enable = lib.mkDefault false;
+  };
+
+  # mDNS: every appliance answers at <hostname>.local on the LAN
+  # (librepod-dev.local, librepod-m90q.local, ...). Per-device names only:
+  # a shared "librepod" alias would collide once two devices share a LAN —
+  # mDNS conflict resolution makes the winner nondeterministic.
+  services.avahi = {
+    enable = lib.mkDefault true;
+    nssmdns4 = true;
+    openFirewall = true;
+    # Publish only the declared interface(s) — hw profiles declare exactly the
+    # LAN NIC. Without this, avahi also answers with cluster-internal
+    # addresses (cni0 10.42.x.x, flannel), which LAN clients can't use.
+    # An empty attrset falls back to avahi's "all interfaces" default.
+    allowInterfaces = lib.mkDefault (lib.attrNames config.networking.interfaces);
+    publish = {
+      enable = true;
+      addresses = true;
+    };
   };
 }

@@ -12,15 +12,17 @@ CURL_BIN="${CURL_BIN:-curl}"
 
 usage() {
   echo "usage: librepod-install --device <hw-profile|module.nix> --name <hostname>"
-  echo "                        --identity FILE [--os-tag vX.Y.Z] [--disk /dev/nvme0n1]"
+  echo "                        --identity FILE [--os-tag vX.Y.Z]"
+  echo "                        [--disk /dev/nvme0n1] [--data-disk /dev/sda]"
   exit 1
 }
 
-DEVICE="" NAME="" TAG="" IDENTITY="" DISK="/dev/nvme0n1"
+DEVICE="" NAME="" TAG="" IDENTITY="" DISK="/dev/nvme0n1" DATA_DISK="/dev/sda"
 while [ $# -gt 0 ]; do
   case "$1" in
     --device) [ $# -ge 2 ] || usage; DEVICE="$2"; shift 2;;
     --disk) [ $# -ge 2 ] || usage; DISK="$2"; shift 2;;
+    --data-disk) [ $# -ge 2 ] || usage; DATA_DISK="$2"; shift 2;;
     --name) [ $# -ge 2 ] || usage; NAME="$2"; shift 2;;
     --os-tag) [ $# -ge 2 ] || usage; TAG="$2"; shift 2;;
     --identity) [ $# -ge 2 ] || usage; IDENTITY="$2"; shift 2;;
@@ -31,6 +33,7 @@ done
 [ -n "$IDENTITY" ] || { echo "--identity is required (users/keys live there)"; exit 1; }
 # It lands in a Nix string in install.nix.
 [[ "$DISK" =~ ^/dev/[A-Za-z0-9/_.-]+$ ]] || { echo "invalid disk: $DISK"; exit 1; }
+[[ "$DATA_DISK" =~ ^/dev/[A-Za-z0-9/_.-]+$ ]] || { echo "invalid data disk: $DATA_DISK"; exit 1; }
 # Hostname, k8s node and ConfigMap name, and a bare Nix attr name in flake.nix.
 [[ "$NAME" =~ ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || { echo "invalid name: $NAME (a-z, 0-9, -)"; exit 1; }
 
@@ -84,6 +87,7 @@ write_facts() { # extra line, e.g. the stateVersion
 {
   imports = [ ./disk.nix ];
   disko.devices.disk.main.device = "$DISK";
+  disko.devices.disk.data.device = "$DATA_DISK";
   $1
 }
 EOF
@@ -99,7 +103,13 @@ SV="$("$NIX_BIN" --extra-experimental-features "nix-command flakes" eval --raw \
 write_facts "system.stateVersion = \"$SV\";"
 
 echo "==> partitioning + formatting via disko (DESTROYS the disk)"
-"$DISKO_BIN" --flake "$WORKDIR#$NAME" --mode destroy,format,mount --root-mountpoint "$MNT"
+# --yes-wipe-all-disks: disko ≥1.12 prompts for confirmation, which reads EOF
+# and aborts under headless SSH/no-TTY runs. The operator already chose the
+# disk (--disk / default nvme0n1) and this script prints its own destroy
+# warning; disko's prompt adds nothing but a brick for netboot installs.
+# Scope note: the flag covers only disks declared in disko.devices — the one
+# layout disk, never extra data disks the layout doesn't mention.
+"$DISKO_BIN" --flake "$WORKDIR#$NAME" --mode destroy,format,mount --root-mountpoint "$MNT" --yes-wipe-all-disks
 
 echo "==> installing NixOS"
 install -d -m 700 "$MNT/etc/nixos"
@@ -114,4 +124,4 @@ fi
 
 "$NIXOS_INSTALL_BIN" --root "$MNT" --flake "$WORKDIR#$NAME" --no-root-passwd
 
-echo "==> installed $NAME ($DEVICE on $DISK, $TAG). Reboot into the device when ready."
+echo "==> installed $NAME ($DEVICE: os $DISK + data $DATA_DISK, $TAG). Reboot into the device when ready."
