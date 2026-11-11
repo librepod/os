@@ -55,6 +55,34 @@
         self.nixosModules.nfs
         self.nixosModules.updates
       ];
+
+      # The image base stack: no Nix, no updater, no disko, no per-device
+      # users on the device. Shared verbatim by mkImage and the image E2E node.
+      imageModules = [
+        {
+          nixpkgs.overlays = [ self.overlays.default ];
+        }
+        self.nixosModules.common
+        self.nixosModules.networking
+        self.nixosModules.ssh
+        self.nixosModules.usb-automount
+        self.nixosModules.k3s
+        self.nixosModules.nfs
+        self.nixosModules.image
+        # The data disk: the image-side twin of disko's disk.data.
+        {
+          fileSystems."/mnt/k3s" = {
+            device = "/dev/disk/by-partlabel/librepod-data";
+            fsType = "ext4";
+          };
+        }
+        # Every image install shares it, so it is frozen: changing it needs a
+        # migration for every installed device.
+        { system.stateVersion = "26.05"; }
+      ];
+
+      # Supported profile by name, or a consumer-supplied module path
+      hwModule = device: if builtins.isString device then (./hw + "/${device}") else device;
     in
     {
       # Overlay that pins k3s to a specific version via k3s-nixpkgs.
@@ -93,6 +121,7 @@
 
       lib = {
         applianceModules = applianceModules;
+        imageModules = imageModules;
 
         # Creates a NixOS configuration with standard modules (disko).
         # Args:
@@ -141,14 +170,35 @@
             modules =
               applianceModules
               ++ [
-                # Supported profile by name, or a consumer-supplied module path
-                (if builtins.isString device then (./hw + "/${device}") else device)
+                (hwModule device)
                 { networking.hostName = name; }
                 # The updater reports this, not flake.lock: the two disagree
                 # after a failed or rolled-back update.
                 { environment.etc."librepod-release".text = version; }
                 # Appliances are updateable; identity can override (mkDefault).
                 { librepod.updates.enable = nixpkgs.lib.mkDefault true; }
+              ]
+              ++ modules;
+          };
+
+        # Builds one update-ready disk image per hardware profile; nothing
+        # per-device is in it (see modules/identity).
+        #   version — becomes system.image.version, the sysupdate version
+        #   device  — as for mkDevice
+        #   modules — extra modules (until phase 4/5: librepod.image settings)
+        mkImage =
+          {
+            device,
+            version,
+            modules ? [ ],
+          }:
+          nixpkgs.lib.nixosSystem {
+            system = "x86_64-linux";
+            modules =
+              imageModules
+              ++ [
+                (hwModule device)
+                { system.image.version = version; }
               ]
               ++ modules;
           };
@@ -245,6 +295,38 @@
               }
               ''
                 echo "mkDevice evaluates for both device forms — check passed."
+                touch $out
+              '';
+
+          # mkImage produces an evaluable disk image per hw profile.
+          image-profiles =
+            let
+              stub =
+                { pkgs, ... }:
+                {
+                  librepod.image = {
+                    updateUrl = "https://updates.invalid/";
+                    pubring = pkgs.writeText "empty.pgp" "";
+                    healthCheck = "${pkgs.coreutils}/bin/true";
+                  };
+                  # shortcut: no login until modules/identity, which drops this
+                  users.allowNoPasswordLogin = true;
+                };
+            in
+            pkgs.runCommand "image-profiles-eval"
+              {
+                # Same as mk-device: evaluate fully, build nothing.
+                forcedEval = builtins.deepSeq (map (
+                  hw:
+                  (self.lib.mkImage {
+                    device = hw;
+                    version = "0";
+                    modules = [ stub ];
+                  }).config.system.build.image.drvPath
+                ) hwProfiles) "";
+              }
+              ''
+                echo "mkImage evaluates for every hw profile — check passed."
                 touch $out
               '';
 
