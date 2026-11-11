@@ -1,4 +1,8 @@
-{ lib, ... }:
+{
+  config,
+  lib,
+  ...
+}:
 
 {
   networking = {
@@ -32,6 +36,11 @@
     enable = lib.mkDefault true;
     nssmdns4 = true;
     openFirewall = true;
+    # Publish only the declared interface(s) — hw profiles declare exactly the
+    # LAN NIC. Without this, avahi also answers with cluster-internal
+    # addresses (cni0 10.42.x.x, flannel), which LAN clients can't use.
+    # An empty attrset falls back to avahi's "all interfaces" default.
+    allowInterfaces = lib.mkDefault (lib.attrNames config.networking.interfaces);
     publish = {
       enable = true;
       addresses = true;
