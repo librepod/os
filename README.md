@@ -59,6 +59,7 @@ Then configure your machine:
 | `gobackup` | Declarative backup with GoBackup |
 | `casdoor` | Casdoor IAM CLI |
 | `gitolite` | Git repository hosting with Flux integration |
+| `onboarding` | Hands the installer's setup code (the sticker's) to the Marketplace |
 | `usb-automount` | USB drive auto-mount (standalone or via `common`) |
 
 ## Device Profiles

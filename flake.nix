@@ -54,6 +54,7 @@
         # k3s's built-in local-storage
         self.nixosModules.nfs
         self.nixosModules.updates
+        self.nixosModules.onboarding
       ];
 
       # The image base stack: no Nix, no updater, no disko, no per-device
@@ -70,6 +71,7 @@
         self.nixosModules.nfs
         self.nixosModules.image
         self.nixosModules.identity
+        self.nixosModules.onboarding
         # Every image install shares it, so it is frozen: changing it needs a
         # migration for every installed device.
         { system.stateVersion = "26.05"; }
@@ -107,6 +109,7 @@
         networking = import ./modules/networking;
         nfs = import ./modules/nfs;
         nix = import ./modules/nix;
+        onboarding = import ./modules/onboarding;
         ssh = import ./modules/ssh;
         updates = import ./modules/updates;
         users = import ./modules/users;
@@ -379,6 +382,7 @@
           updater-test = pkgs.callPackage ./checks/updater-test.nix { };
           sentinel-test = pkgs.callPackage ./checks/sentinel-test.nix { };
           installer-test = pkgs.callPackage ./checks/installer-test.nix { };
+          onboarding-test = pkgs.callPackage ./checks/onboarding-test.nix { };
 
           # Formatting check: ensures all .nix files are formatted.
           formatting = treefmtEval.config.build.check self;
