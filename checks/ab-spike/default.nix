@@ -45,12 +45,20 @@ let
         script = "echo 1 > /sys/fs/cgroup/init.scope/cgroup.freeze";
       };
     };
+    # A mount that never succeeds (a new kernel missing a disk's driver looks
+    # the same): local-fs.target fails and the boot stops in emergency mode.
+    badmount.fileSystems."/ab-spike-missing" = {
+      device = "/dev/disk/by-partlabel/ab-spike-missing";
+      fsType = "ext4";
+      options = [ "x-systemd.device-timeout=5s" ];
+    };
   };
   releases = {
     "2" = "good";
     "3" = "unhealthy";
     "4" = "panic";
     "5" = "hang";
+    "6" = "badmount";
   };
 in
 hostPkgs.testers.runNixOSTest {
@@ -247,7 +255,7 @@ hostPkgs.testers.runNixOSTest {
           reboot_and_wait()
           assert version() == "2"
 
-      for v, why in [("3", "unhealthy"), ("4", "panic"), ("5", "hang")]:
+      for v, why in [("3", "unhealthy"), ("4", "panic"), ("5", "hang"), ("6", "badmount")]:
           with subtest(f"v{v} ({why}) falls back to v2 by itself"):
               install(v)
               # tries=2: v boots twice, then v2 comes back

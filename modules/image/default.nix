@@ -192,8 +192,18 @@ in
       };
     };
 
-    # A panic or a hang reboots by itself; boot counting does the rest.
-    boot.kernelParams = [ "panic=10" ];
+    # A panic, a failed initrd or a hang reboots by itself; boot counting does the rest.
+    boot.kernelParams = [
+      "panic=10"
+      "boot.panic_on_fail"
+    ];
     systemd.settings.Manager.RuntimeWatchdogSec = lib.mkDefault "30s";
+    # A failed mount stops the boot in emergency mode, before the health gate,
+    # and root is locked so there is no shell either: reboot instead.
+    systemd.services.librepod-emergency-reboot = {
+      wantedBy = [ "emergency.target" ];
+      unitConfig.DefaultDependencies = false;
+      serviceConfig.ExecStart = "${config.systemd.package}/bin/systemctl --no-block reboot";
+    };
   };
 }
