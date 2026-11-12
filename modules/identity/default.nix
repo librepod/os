@@ -5,8 +5,10 @@
 # - /etc/shadow: passwords; first boot creates librepod / librepod with root
 #   locked (onboarding changes it with chpasswd)
 # - /etc/ssh/ssh_host_*, /etc/machine-id: generated on first boot
-# - data disk, GPT partition label librepod-data, ext4: PVs at /mnt/k3s
+# - /etc/librepod/data-partuuid: the data partition's GPT UUID and a newline
 #   (installer, phase 3)
+# - data disk: one GPT partition labelled librepod-data, ext4, found by that
+#   UUID: PVs at /mnt/k3s
 # The generic password is console-only: sshd wants a key and a password, and
 # no key ships.
 { pkgs, lib, ... }:
@@ -32,4 +34,18 @@
     extraGroups = [ "wheel" ];
     initialPassword = "librepod";
   };
+
+  # Another LibrePod's data disk carries the same label: match the recorded UUID.
+  services.udev.extraRules = ''
+    SUBSYSTEM=="block", ENV{ID_PART_ENTRY_NAME}=="librepod-data", PROGRAM="${pkgs.gnugrep}/bin/grep -qxF $env{ID_PART_ENTRY_UUID} /etc/librepod/data-partuuid", SYMLINK+="disk/librepod-data"
+  '';
+  # Without the data disk the device still boots, but the bind and NFS stay
+  # down, so PVs never land on root.
+  fileSystems."/mnt/k3s" = {
+    device = "/dev/disk/librepod-data";
+    fsType = "ext4";
+    options = [ "nofail" ];
+  };
+  fileSystems."/exports/k3s".options = [ "nofail" ];
+  systemd.services.nfs-server.unitConfig.RequiresMountsFor = "/exports/k3s";
 }

@@ -1,8 +1,10 @@
 # checks/image-e2e/default.nix — the appliance image, k3s included, keeps its
 # identity outside Nix: the hostname comes from /etc/hostname, the generic
 # login is console-only until a key is added, and a changed password, the
-# host key and machine-id survive a reboot. Extra NVMe, SATA and USB drives
-# change nothing: the OS disk and the data disk are found by label.
+# host key and machine-id survive a reboot. Extra NVMe, SATA and USB drives,
+# another LibrePod's data disk among them, change nothing: the OS disk is the
+# one booted from, the data disk the one recorded on root. Without its data
+# disk the device still boots, with NFS off.
 # Run locally (KVM): nix build .#image-e2e -L
 { self, nixpkgs }:
 let
@@ -37,13 +39,18 @@ let
           --architecture=x86-64 --seed=${seed} --definitions=${defs} $out
       '';
   # What the installer will put on the second disk (phase 3).
-  dataDisk = gptDisk "data" "5d3b5d0e-8f0a-4f43-9d6e-3f4c1d2a7b10" [
-    {
-      Type = "linux-generic";
-      Label = "librepod-data";
-      Format = "ext4";
-      SizeMinBytes = "1G";
-    }
+  dataPart = uuid: {
+    Type = "linux-generic";
+    Label = "librepod-data";
+    UUID = uuid;
+    Format = "ext4";
+    SizeMinBytes = "1G";
+  };
+  dataUuid = "4c1e2f7a-9b3d-4e5f-8a6b-1c2d3e4f5a60";
+  dataDisk = gptDisk "data" "5d3b5d0e-8f0a-4f43-9d6e-3f4c1d2a7b10" [ (dataPart dataUuid) ];
+  # Another LibrePod's data disk, plugged in next to ours.
+  otherDataDisk = gptDisk "otherdata" "9a4f1c2e-6b7d-4e8f-a1b2-c3d4e5f60718" [
+    (dataPart "7d2a0c55-3e1b-4f6a-9c8d-2b3a4c5d6e70")
   ];
   # A Linux disk from another computer, with the generic labels.
   foreignDisk = gptDisk "foreign" "0b6e2f61-2c1d-4a8e-b3f7-9e5a4c3d2b01" [
@@ -103,6 +110,8 @@ hostPkgs.testers.runNixOSTest {
           # The extra NVMe comes first: the data disk is not nvme0n1.
           "-drive if=none,id=extra,format=qcow2,file=$EXTRA_DISK"
           "-device nvme,serial=extra,drive=extra"
+          "-drive if=none,id=otherdata,format=qcow2,file=$OTHERDATA_DISK"
+          "-device nvme,serial=otherdata,drive=otherdata"
           "-drive if=none,id=data,format=qcow2,file=$DATA_DISK"
           "-device nvme,serial=data,drive=data"
           "-device ahci,id=ahci"
@@ -117,7 +126,7 @@ hostPkgs.testers.runNixOSTest {
       # The framework gives root an empty password; see the product's root.
       users.users.root.hashedPasswordFile = lib.mkForce null;
 
-      image.repart.partitions.root = {
+      image.repart.partitions."40-root" = {
         # k3s doesn't fit the module's 512M; root growth is phase 3.
         repartConfig = {
           SizeMinBytes = lib.mkForce "4G";
@@ -125,6 +134,7 @@ hostPkgs.testers.runNixOSTest {
         };
         # As the installer will write it.
         contents."/etc/hostname".source = pkgs.writeText "hostname" "pod-image\n";
+        contents."/etc/librepod/data-partuuid".source = pkgs.writeText "data-partuuid" "${dataUuid}\n";
       };
       environment.systemPackages = [ pkgs.sshpass ];
     };
@@ -181,6 +191,7 @@ hostPkgs.testers.runNixOSTest {
       os.environ["NIX_DISK_IMAGE"] = disk("${m.system.build.image}/${m.image.filePath}")
       os.environ["DATA_DISK"] = disk("${dataDisk}")
       os.environ["EXTRA_DISK"] = disk()
+      os.environ["OTHERDATA_DISK"] = disk("${otherDataDisk}")
       os.environ["FOREIGN_DISK"] = disk("${foreignDisk}")
       os.environ["USB_DISK"] = disk()
       pod.start(allow_reboot=True)
@@ -195,7 +206,7 @@ hostPkgs.testers.runNixOSTest {
 
       def check_drives():
           serials = set(pod.succeed("lsblk -dno SERIAL").split())
-          assert {"root", "data", "extra", "foreign", "usb"} <= serials, serials
+          assert {"root", "data", "otherdata", "extra", "foreign", "usb"} <= serials, serials
           for path in ["/", "/boot", "/nix/store"]:
               assert disk_of(path) == "root", (path, disk_of(path))
           assert disk_of("/mnt/k3s") == "data", disk_of("/mnt/k3s")
@@ -256,6 +267,16 @@ hostPkgs.testers.runNixOSTest {
           pod.wait_for_unit("sshd.service")
           pod.succeed(ssh.format(pw="new-pw", opts="-i /root/key"))
           pod.fail(ssh.format(pw="librepod", opts="-i /root/key"))
+
+      with subtest("a missing data disk doesn't stop boot; NFS stays off"):
+          pod.shutdown()
+          os.environ["DATA_DISK"] = disk()  # blank: no partition with our UUID
+          pod.start(allow_reboot=True)
+          pod.wait_for_unit("multi-user.target")
+          pod.wait_for_unit("sshd.service")
+          pod.fail("findmnt /mnt/k3s")
+          pod.fail("findmnt /exports/k3s")
+          pod.fail("systemctl is-active nfs-server.service")
 
       used = os.stat("${m.system.build.image}/${m.image.baseName}.store.raw").st_blocks * 512
       print(f"image-e2e numbers: store slot {used / 2**20:.0f} MiB used of ${m.librepod.image.slotSize}")

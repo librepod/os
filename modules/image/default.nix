@@ -18,6 +18,12 @@ let
     SizeMinBytes = cfg.slotSize;
     SizeMaxBytes = cfg.slotSize;
   };
+  # udev marks the disk systemd-boot started from (initrd) and the disk holding
+  # / (after the switch): a copy of this image on another drive is never mounted.
+  bootDiskRules = ''
+    SUBSYSTEM=="block", ENV{DEVTYPE}=="partition", IMPORT{parent}="ID_PART_GPT_AUTO_ROOT_DISK"
+    SUBSYSTEM=="block", ENV{DEVTYPE}=="partition", ENV{ID_PART_GPT_AUTO_ROOT_DISK}=="1", ENV{ID_PART_ENTRY_NAME}=="?*", SYMLINK+="disk/librepod-os/$env{ID_PART_ENTRY_NAME}"
+  '';
 in
 {
   imports = [
@@ -54,19 +60,22 @@ in
     system.image.id = "librepod";
     boot.loader.grub.enable = false;
 
-    # Prefixed labels: a generic "root" or "esp" collides with any plugged-in disk.
+    # Prefixed labels: a generic "root" or "esp" collides with any plugged-in
+    # disk. The librepod-os links make them unique per disk: only the boot disk's.
+    boot.initrd.services.udev.rules = bootDiskRules;
+    services.udev.extraRules = bootDiskRules;
     fileSystems = {
       "/" = {
-        device = "/dev/disk/by-partlabel/librepod-root";
+        device = "/dev/disk/librepod-os/librepod-root";
         fsType = "ext4";
       };
       "/boot" = {
-        device = "/dev/disk/by-partlabel/librepod-esp";
+        device = "/dev/disk/librepod-os/librepod-esp";
         fsType = "vfat";
       };
       # The version is baked into this UKI's initrd: each UKI mounts its own slot.
       "/nix/store" = {
-        device = "/dev/disk/by-partlabel/store_${version}";
+        device = "/dev/disk/librepod-os/store_${version}";
         fsType = "squashfs";
       };
     };
@@ -75,8 +84,9 @@ in
       name = id;
       # Also writes the store partition alone: the release's slot image.
       split = true;
+      # Written in name order: root last, so the installer can grow it.
       partitions = {
-        esp = {
+        "10-esp" = {
           contents = {
             "/EFI/BOOT/BOOT${lib.toUpper efiArch}.EFI".source =
               "${pkgs.systemd}/lib/systemd/boot/efi/systemd-boot${efiArch}.efi";
@@ -91,7 +101,7 @@ in
             SplitName = "-";
           };
         };
-        store-a = {
+        "20-store-a" = {
           storePaths = [ config.system.build.toplevel ];
           nixStorePrefix = "/";
           repartConfig = slot // {
@@ -101,12 +111,12 @@ in
             SplitName = "store";
           };
         };
-        store-b.repartConfig = slot // {
+        "30-store-b".repartConfig = slot // {
           Label = "_empty";
           SplitName = "-";
         };
-        # shortcut: fixed 512M root, grown on first boot by systemd-repart in the product
-        root.repartConfig = {
+        # The installer grows it to fill the disk.
+        "40-root".repartConfig = {
           Type = "root";
           Format = "ext4";
           Label = "librepod-root";

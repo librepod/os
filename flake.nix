@@ -70,13 +70,6 @@
         self.nixosModules.nfs
         self.nixosModules.image
         self.nixosModules.identity
-        # The data disk: the image-side twin of disko's disk.data.
-        {
-          fileSystems."/mnt/k3s" = {
-            device = "/dev/disk/by-partlabel/librepod-data";
-            fsType = "ext4";
-          };
-        }
         # Every image install shares it, so it is frozen: changing it needs a
         # migration for every installed device.
         { system.stateVersion = "26.05"; }
