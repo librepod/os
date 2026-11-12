@@ -81,7 +81,7 @@ hostPkgs.testers.runNixOSTest {
       virtualisation = {
         useEFIBoot = true;
         qemu.options = [
-          "-drive if=none,id=os,format=qcow2,file=$OS_DISK"
+          "-drive if=none,id=os,format=qcow2,file=$OS_DISK,detect-zeroes=on"
           "-device virtio-blk-pci,serial=os,drive=os"
           "-drive if=none,id=data,format=qcow2,file=$DATA_DISK"
           "-device nvme,serial=data,drive=data"
@@ -224,7 +224,7 @@ hostPkgs.testers.runNixOSTest {
 
       # One NVRAM: the pod boots by the entry the installer wrote.
       os.environ["NIX_EFI_VARS"] = os.path.join(tempfile.mkdtemp(), "efi-vars.fd")
-      os.environ["OS_DISK"] = disk("${foreignDisk}", "10G")
+      os.environ["OS_DISK"] = disk("${foreignDisk}", "24G")
       os.environ["DATA_DISK"] = disk("${foreignDisk}", "2G")  # a recycled disk
       os.environ["USB_DISK"] = disk()
       installer.start()

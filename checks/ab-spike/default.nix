@@ -94,7 +94,14 @@ hostPkgs.testers.runNixOSTest {
         useEFIBoot = true;
         fileSystems = lib.mkForce { };
         memorySize = 2048;
-        qemu.options = [ "-device i6300esb" ];
+        # Our own root drive: every update writes a whole slot, mostly zeros,
+        # and detect-zeroes keeps them out of the qcow2.
+        diskImage = null;
+        qemu.options = [
+          "-device i6300esb"
+          "-drive if=none,id=root,format=qcow2,file=$NIX_DISK_IMAGE,cache=writeback,werror=report,detect-zeroes=on"
+          "-device virtio-blk-pci,drive=root,bootindex=1"
+        ];
       };
       # Loaded before anything can hang (the M710q's is iTCO_wdt).
       boot.initrd.kernelModules = [ "i6300esb" ];

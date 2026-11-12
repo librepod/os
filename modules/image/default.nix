@@ -12,11 +12,22 @@ let
   cfg = config.librepod.image;
   inherit (config.system.image) id version;
   inherit (pkgs.stdenv.hostPlatform) efiArch;
+  # usr and usr-verity, the types the verity phase needs: an installed
+  # partition keeps its type, and sysupdate tells a slot from its hashes by it.
   slot = {
-    Type = "linux-generic";
+    Type = "usr";
     Minimize = "off";
     SizeMinBytes = cfg.slotSize;
     SizeMaxBytes = cfg.slotSize;
+  };
+  # Reserved for the verity phase: 8 GiB of 4 KiB blocks hash to ~65 MiB.
+  veritySlot = {
+    Type = "usr-verity";
+    Label = "_empty";
+    Minimize = "off";
+    SizeMinBytes = "128M";
+    SizeMaxBytes = "128M";
+    SplitName = "-";
   };
   # udev marks the disk systemd-boot started from (initrd) and the disk holding
   # / (after the switch): a copy of this image on another drive is never mounted.
@@ -42,7 +53,7 @@ in
     };
     slotSize = lib.mkOption {
       type = lib.types.str;
-      default = "2G";
+      default = "8G";
       description = "Size of each store slot; fixed once a device is installed.";
     };
     tries = lib.mkOption {
@@ -97,7 +108,7 @@ in
             Type = "esp";
             Label = "librepod-esp";
             Format = "vfat";
-            SizeMinBytes = "256M";
+            SizeMinBytes = "1G";
             SplitName = "-";
           };
         };
@@ -111,10 +122,12 @@ in
             SplitName = "store";
           };
         };
+        "25-store-a-verity".repartConfig = veritySlot;
         "30-store-b".repartConfig = slot // {
           Label = "_empty";
           SplitName = "-";
         };
+        "35-store-b-verity".repartConfig = veritySlot;
         # The installer grows it to fill the disk.
         "40-root".repartConfig = {
           Type = "root";
@@ -148,7 +161,7 @@ in
               Type = "partition";
               Path = "auto";
               MatchPattern = "store_@v";
-              MatchPartitionType = "linux-generic";
+              MatchPartitionType = "usr";
               ReadOnly = "yes";
               InstancesMax = 2;
             };
