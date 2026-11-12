@@ -103,10 +103,11 @@ can be a full appliance without a profile in `hw/`:
       device = ./my-hardware.nix;       # instead of a ./hw/<name> string
 ```
 
-Provision a device over netboot with `librepod-install --device lenovo-m710q
---name pod-1 --identity id.nix` (`--device` also takes a hardware module
-path, e.g. `--device ./my-hardware.nix`; `--disk /dev/sda` for a machine
-without NVMe, default `/dev/nvme0n1`). Updates are consent-driven: the Marketplace
+Provision a device from a live USB booted through UEFI with `librepod-install
+--image librepod_1.raw.zst --name pod-1` (`--disk`, default `/dev/nvme0n1`;
+`--data-disk`, default `/dev/sda`). It writes the appliance image, the name and
+the `LibrePod` boot entry; a data disk that already holds LibrePod data needs
+`--keep-data` or `--wipe-data`. Updates are consent-driven: the Marketplace
 writes intent to ConfigMap `librepod-os/<hostname>` ([contract](docs/updates.md)); the host updater applies
 release tags only (`vX.Y.Z`) and boots the new version once as a trial; the
 old version stays the boot default until the new one passes its health checks. Unattended updates need an

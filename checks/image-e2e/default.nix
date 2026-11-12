@@ -1,10 +1,13 @@
-# checks/image-e2e/default.nix — the appliance image, k3s included, keeps its
-# identity outside Nix: the hostname comes from /etc/hostname, the generic
-# login is console-only until a key is added, and a changed password, the
-# host key and machine-id survive a reboot. Extra NVMe, SATA and USB drives,
-# another LibrePod's data disk among them, change nothing: the OS disk is the
-# one booted from, the data disk the one recorded on root. Without its data
-# disk the device still boots, with NFS off.
+# checks/image-e2e/default.nix — librepod-install writes the appliance image,
+# k3s included, to an OS disk and a recycled data disk; it refuses USB, mounted
+# and partition targets, and existing LibrePod data unless told --keep-data.
+# The installed disk boots by its UEFI entry with root grown to the disk, and
+# keeps its identity outside Nix: the hostname comes from /etc/hostname, the
+# generic login is console-only until a key is added, and a changed password,
+# the host key and machine-id survive a reboot. Extra NVMe, SATA and USB
+# drives, another LibrePod's data disk and a copy of the image among them,
+# change nothing: the OS disk is the one booted from, the data disk the one
+# recorded on root. Without its data disk the device still boots, NFS off.
 # Run locally (KVM): nix build .#image-e2e -L
 { self, nixpkgs }:
 let
@@ -38,21 +41,18 @@ let
         unshare --map-root-user fakeroot systemd-repart --dry-run=no --empty=create --size=auto \
           --architecture=x86-64 --seed=${seed} --definitions=${defs} $out
       '';
-  # What the installer will put on the second disk (phase 3).
-  dataPart = uuid: {
-    Type = "linux-generic";
-    Label = "librepod-data";
-    UUID = uuid;
-    Format = "ext4";
-    SizeMinBytes = "1G";
-  };
-  dataUuid = "4c1e2f7a-9b3d-4e5f-8a6b-1c2d3e4f5a60";
-  dataDisk = gptDisk "data" "5d3b5d0e-8f0a-4f43-9d6e-3f4c1d2a7b10" [ (dataPart dataUuid) ];
   # Another LibrePod's data disk, plugged in next to ours.
   otherDataDisk = gptDisk "otherdata" "9a4f1c2e-6b7d-4e8f-a1b2-c3d4e5f60718" [
-    (dataPart "7d2a0c55-3e1b-4f6a-9c8d-2b3a4c5d6e70")
+    {
+      Type = "linux-generic";
+      Label = "librepod-data";
+      UUID = "7d2a0c55-3e1b-4f6a-9c8d-2b3a4c5d6e70";
+      Format = "ext4";
+      SizeMinBytes = "1G";
+    }
   ];
-  # A Linux disk from another computer, with the generic labels.
+  # A Linux disk from another computer, with the generic labels: also what the
+  # installer's targets carry before it runs.
   foreignDisk = gptDisk "foreign" "0b6e2f61-2c1d-4a8e-b3f7-9e5a4c3d2b01" [
     {
       Type = "esp";
@@ -72,6 +72,29 @@ hostPkgs.testers.runNixOSTest {
   name = "image-e2e";
   # The k3s overlay in imageModules
   node.pkgsReadOnly = false;
+
+  # The bench: a live system booted through UEFI, with the device's two disks
+  # and a USB stick.
+  nodes.installer =
+    { pkgs, ... }:
+    {
+      virtualisation = {
+        useEFIBoot = true;
+        qemu.options = [
+          "-drive if=none,id=os,format=qcow2,file=$OS_DISK"
+          "-device virtio-blk-pci,serial=os,drive=os"
+          "-drive if=none,id=data,format=qcow2,file=$DATA_DISK"
+          "-device nvme,serial=data,drive=data"
+          "-device qemu-xhci,id=xhci"
+          "-drive if=none,id=usb,format=qcow2,file=$USB_DISK"
+          "-device usb-storage,bus=xhci.0,serial=usb,drive=usb"
+        ];
+      };
+      environment.systemPackages = [
+        self.packages.x86_64-linux.librepod-install
+        pkgs.efibootmgr
+      ];
+    };
 
   nodes.pod =
     { pkgs, ... }:
@@ -105,7 +128,18 @@ hostPkgs.testers.runNixOSTest {
         useEFIBoot = true;
         fileSystems = lib.mkForce { };
         memorySize = 4096;
-        # The OS disk keeps bootindex=1: the boot entry the installer registers.
+        # No bootindex: OVMF boots by the entry the installer registered.
+        qemu.drives = lib.mkForce [
+          {
+            name = "root";
+            file = ''"$NIX_DISK_IMAGE"'';
+            driveExtraOpts = {
+              cache = "writeback";
+              werror = "report";
+            };
+            deviceExtraOpts.serial = "root";
+          }
+        ];
         qemu.options = [
           # The extra NVMe comes first: the data disk is not nvme0n1.
           "-drive if=none,id=extra,format=qcow2,file=$EXTRA_DISK"
@@ -117,6 +151,9 @@ hostPkgs.testers.runNixOSTest {
           "-device ahci,id=ahci"
           "-drive if=none,id=foreign,format=qcow2,file=$FOREIGN_DISK"
           "-device ide-hd,bus=ahci.0,serial=foreign,drive=foreign"
+          # A copy of the image: same labels, the image's partition UUIDs.
+          "-drive if=none,id=otheros,format=qcow2,file=$OTHEROS_DISK"
+          "-device ide-hd,bus=ahci.1,serial=otheros,drive=otheros"
           "-device qemu-xhci,id=xhci"
           "-drive if=none,id=usb,format=qcow2,file=$USB_DISK"
           "-device usb-storage,bus=xhci.0,serial=usb,drive=usb"
@@ -126,23 +163,19 @@ hostPkgs.testers.runNixOSTest {
       # The framework gives root an empty password; see the product's root.
       users.users.root.hashedPasswordFile = lib.mkForce null;
 
-      image.repart.partitions."40-root" = {
-        # k3s doesn't fit the module's 512M; root growth is phase 3.
-        repartConfig = {
-          SizeMinBytes = lib.mkForce "4G";
-          SizeMaxBytes = lib.mkForce "4G";
-        };
-        # As the installer will write it.
-        contents."/etc/hostname".source = pkgs.writeText "hostname" "pod-image\n";
-        contents."/etc/librepod/data-partuuid".source = pkgs.writeText "data-partuuid" "${dataUuid}\n";
-      };
-      environment.systemPackages = [ pkgs.sshpass ];
+      environment.systemPackages = [
+        pkgs.sshpass
+        pkgs.efibootmgr
+      ];
     };
 
   testScript =
     { nodes, ... }:
     let
       m = nodes.pod;
+      imageZst = hostPkgs.runCommand "image-e2e.raw.zst" {
+        nativeBuildInputs = [ hostPkgs.zstd ];
+      } "zstd -T0 -q ${m.system.build.image}/${m.image.filePath} -o $out";
     in
     ''
       import os, subprocess, tempfile, time
@@ -180,20 +213,49 @@ hostPkgs.testers.runNixOSTest {
           pod.wait_for_unit("multi-user.target")
 
       disks = []
-      def disk(backing=None, size="1G"):
+      def disk(backing=None, size=None):  # size: the backing file's, or 1G blank
           f = tempfile.NamedTemporaryFile(suffix=".qcow2")
           disks.append(f)
           args = ["-b", backing, "-F", "raw"] if backing else []
+          size = [size] if size else [] if backing else ["1G"]
           subprocess.run(["${m.virtualisation.qemu.package}/bin/qemu-img", "create", "-f", "qcow2",
-                          *args, f.name] + ([] if backing else [size]), check=True)
+                          *args, f.name, *size], check=True)
           return f.name
 
-      os.environ["NIX_DISK_IMAGE"] = disk("${m.system.build.image}/${m.image.filePath}")
-      os.environ["DATA_DISK"] = disk("${dataDisk}")
+      # One NVRAM: the pod boots by the entry the installer wrote.
+      os.environ["NIX_EFI_VARS"] = os.path.join(tempfile.mkdtemp(), "efi-vars.fd")
+      os.environ["OS_DISK"] = disk("${foreignDisk}", "10G")
+      os.environ["DATA_DISK"] = disk("${foreignDisk}", "2G")  # a recycled disk
+      os.environ["USB_DISK"] = disk()
+      installer.start()
+      installer.wait_for_unit("multi-user.target")
+
+      def dev(serial):  # kernel path of the disk with this serial
+          return installer.succeed(f"lsblk -dnpo PATH,SERIAL | awk '$2==\"{serial}\" {{print $1}}'").strip()
+      os_, data = dev("os"), dev("data")
+      inst = "librepod-install --image ${imageZst} --name pod-image --disk {disk} --data-disk {data} {flags}"
+
+      with subtest("refusals: USB, mounted, a partition"):
+          installer.fail(inst.format(disk=os_, data=dev("usb"), flags=""))
+          installer.fail(inst.format(disk=dev("root"), data=data, flags=""))  # the installer's own
+          installer.fail(inst.format(disk=os_ + "1", data=data, flags=""))
+          installer.fail("efibootmgr | grep LibrePod")
+
+      with subtest("install; the data disk is ours"):
+          installer.succeed(inst.format(disk=os_, data=data, flags=""))  # recycled disk: no flag needed
+          installer.succeed(f"mkdir -p /mnt && mount {data}p1 /mnt && touch /mnt/marker && umount /mnt")
+
+      with subtest("existing data: refused without a flag, kept with --keep-data"):
+          out = installer.fail(inst.format(disk=os_, data=data, flags="") + " 2>&1")
+          assert "--keep-data" in out and "--wipe-data" in out, out
+          installer.succeed(inst.format(disk=os_, data=data, flags="--keep-data"))
+      installer.shutdown()
+
+      os.environ["NIX_DISK_IMAGE"] = os.environ["OS_DISK"]
       os.environ["EXTRA_DISK"] = disk()
       os.environ["OTHERDATA_DISK"] = disk("${otherDataDisk}")
       os.environ["FOREIGN_DISK"] = disk("${foreignDisk}")
-      os.environ["USB_DISK"] = disk()
+      os.environ["OTHEROS_DISK"] = disk("${m.system.build.image}/${m.image.filePath}")
       pod.start(allow_reboot=True)
       pod.wait_for_unit("multi-user.target")
 
@@ -204,9 +266,14 @@ hostPkgs.testers.runNixOSTest {
           src = pod.succeed(f"findmnt -fnvo SOURCE {path}").strip()
           return pod.succeed(f"lsblk -dno SERIAL /dev/$(lsblk -no PKNAME {src})").strip()
 
+      def part_uuid(serial, label):
+          # GPT UUID of the partition with this label on the disk with this serial
+          disk = pod.succeed(f"lsblk -dnpo PATH,SERIAL | awk '$2==\"{serial}\" {{print $1}}'").strip()
+          return pod.succeed(f"lsblk -nro PARTLABEL,PARTUUID {disk} | awk '$1==\"{label}\" {{print $2}}'").strip()
+
       def check_drives():
           serials = set(pod.succeed("lsblk -dno SERIAL").split())
-          assert {"root", "data", "otherdata", "extra", "foreign", "usb"} <= serials, serials
+          assert {"root", "data", "otherdata", "extra", "foreign", "otheros", "usb"} <= serials, serials
           for path in ["/", "/boot", "/nix/store"]:
               assert disk_of(path) == "root", (path, disk_of(path))
           assert disk_of("/mnt/k3s") == "data", disk_of("/mnt/k3s")
@@ -237,6 +304,14 @@ hostPkgs.testers.runNixOSTest {
 
       with subtest("extra NVMe, SATA and USB drives change nothing"):
           check_drives()
+
+      with subtest("installed: root fills the disk, our entry booted, old data kept"):
+          assert int(pod.succeed("df -B1 --output=size / | tail -1")) > 5 * 2**30
+          assert "LibrePod" in pod.succeed("efibootmgr | grep \"Boot$(efibootmgr | sed -n 's/^BootCurrent: //p')\"")
+          pod.succeed("test -e /mnt/k3s/marker")
+          # fresh GUIDs: our ESP differs from the image copy's
+          ours, copy = part_uuid("root", "librepod-esp"), part_uuid("otheros", "librepod-esp")
+          assert ours and copy and ours != copy, (ours, copy)
 
       with subtest("PVs land on the data disk"):
           assert pod.succeed("findmnt -no PARTLABEL /mnt/k3s").strip() == "librepod-data"

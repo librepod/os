@@ -1,20 +1,28 @@
 {
   writeShellApplication,
-  curl,
-  jq,
-  nix,
-  disko,
-  nixos-install-tools,
+  coreutils,
+  util-linux,
+  gptfdisk,
+  zstd,
+  e2fsprogs,
+  efibootmgr,
+  gnugrep,
+  gawk,
+  systemd,
 }:
 
 writeShellApplication {
   name = "librepod-install";
   runtimeInputs = [
-    curl
-    jq
-    nix
-    disko
-    nixos-install-tools
+    coreutils
+    util-linux
+    gptfdisk
+    zstd
+    e2fsprogs
+    efibootmgr
+    gnugrep
+    gawk
+    systemd # udevadm
   ];
   text = builtins.readFile ./install.sh;
 }
