@@ -235,10 +235,15 @@ hostPkgs.testers.runNixOSTest {
       os_, data = dev("os"), dev("data")
       inst = "librepod-install --image ${imageZst} --name pod-image --disk {disk} --data-disk {data} {flags}"
 
-      with subtest("refusals: USB, mounted, a partition"):
+      with subtest("refusals: USB, mounted, a partition, held by device-mapper"):
           installer.fail(inst.format(disk=os_, data=dev("usb"), flags=""))
           installer.fail(inst.format(disk=dev("root"), data=data, flags=""))  # the installer's own
           installer.fail(inst.format(disk=os_ + "1", data=data, flags=""))
+          # an old LVM the live system activated: in use, though nothing is mounted
+          installer.succeed(f"dmsetup create held --table '0 8 linear {os_} 0'")
+          out = installer.fail(inst.format(disk=os_, data=data, flags="") + " 2>&1")
+          assert "in use" in out, out
+          installer.succeed("dmsetup remove held")
           installer.fail("efibootmgr | grep LibrePod")
 
       with subtest("install; the data disk is ours"):
@@ -349,6 +354,8 @@ hostPkgs.testers.runNixOSTest {
           pod.start(allow_reboot=True)
           pod.wait_for_unit("multi-user.target")
           pod.wait_for_unit("sshd.service")
+          # past the device timeout (~300 s here): the bind must not fall back to root's /mnt/k3s
+          pod.wait_until_fails("systemctl list-jobs --no-legend | grep -E 'k3s.mount|nfs-server'", timeout=600)
           pod.fail("findmnt /mnt/k3s")
           pod.fail("findmnt /exports/k3s")
           pod.fail("systemctl is-active nfs-server.service")

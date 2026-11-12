@@ -41,6 +41,8 @@ for d in "$DISK" "$DATA_DISK"; do
   [ "$(lsblk -dnro TRAN "$d")" != usb ] && [ "$(lsblk -dnro RM "$d")" = 0 ] \
     || die "$d is a USB or removable drive"
   [ -z "$(lsblk -nro MOUNTPOINTS "$d" | tr -d '[:space:]')" ] || die "$d has a mounted partition"
+  [ -z "$(lsblk -nro TYPE "$d" | grep -vxE 'disk|part' || true)" ] \
+    || die "$d is in use (LVM, RAID or encryption): stop it first, e.g. vgchange -an"
 done
 [ "$(realpath "$DISK")" != "$(realpath "$DATA_DISK")" ] || die "--disk and --data-disk are the same disk"
 [ -d /sys/firmware/efi/efivars ] || die "not booted through UEFI: the boot entry can't be written"
@@ -82,11 +84,13 @@ else
   DATA_UUID=$(cat /proc/sys/kernel/random/uuid)
   wipefs -aq "$DATA_DISK"
   sgdisk -Z "$DATA_DISK" >/dev/null
-  sgdisk -n1:0:0 -t1:8300 -c1:librepod-data -u1:"$DATA_UUID" "$DATA_DISK" >/dev/null
+  sgdisk -n1:0:0 -t1:8300 -u1:"$DATA_UUID" "$DATA_DISK" >/dev/null
   partx -u "$DATA_DISK"
   udevadm settle
   # -F: always format; stale signatures must not skip it
   mkfs.ext4 -qF "$(lsblk -nrpo PATH,PARTN "$DATA_DISK" | awk '$2 == 1 { print $1 }')"
+  # Labelled last: an interrupted format leaves no LibrePod data to keep.
+  sgdisk -c1:librepod-data "$DATA_DISK" >/dev/null
 fi
 
 echo "==> writing $NAME and its data disk to root"
