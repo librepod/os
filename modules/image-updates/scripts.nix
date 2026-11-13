@@ -14,10 +14,13 @@ let
     name: file: extraInputs:
     writeShellApplication {
       inherit name;
+      # Each script uses a subset of common.sh.
+      excludeShellChecks = [ "SC2329" ];
       runtimeInputs = runtimeInputs ++ extraInputs;
       text = builtins.readFile ./common.sh + builtins.readFile file;
     };
 in
 {
   updater = mkScript "librepod-update" ./updater.sh [ ];
+  health = mkScript "librepod-update-health" ./health.sh healthInputs;
 }

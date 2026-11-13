@@ -381,6 +381,7 @@
 
           updater-test = pkgs.callPackage ./checks/updater-test.nix { };
           image-updater-test = pkgs.callPackage ./checks/image-updater-test.nix { };
+          image-health-test = pkgs.callPackage ./checks/image-health-test.nix { };
           sentinel-test = pkgs.callPackage ./checks/sentinel-test.nix { };
           installer-test = pkgs.callPackage ./checks/installer-test.nix { };
           onboarding-test = pkgs.callPackage ./checks/onboarding-test.nix { };
