@@ -387,7 +387,7 @@ One-time setup (owner, a machine with `gh` logged in):
 ```sh
 export GNUPGHOME="$(mktemp -d)"
 gpg --batch --passphrase "" --quick-gen-key "LibrePod release <release@librepod.dev>" ed25519 sign never
-gpg --export > keys/release.pgp
+mkdir -p keys && gpg --export > keys/release.pgp
 gh api -X PUT repos/librepod/os/environments/release-signing
 gpg --export-secret-keys --armor | gh secret set RELEASE_SIGNING_KEY --env release-signing --repo librepod/os
 rm -rf "$GNUPGHOME"
