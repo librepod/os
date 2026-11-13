@@ -107,7 +107,13 @@ Provision a device from a live USB booted through UEFI with `librepod-install
 --image librepod_1.raw.zst --name pod-1` (`--disk`, default `/dev/nvme0n1`;
 `--data-disk`, default `/dev/sda`). It writes the appliance image, the name and
 the `LibrePod` boot entry; a data disk that already holds LibrePod data needs
-`--keep-data` or `--wipe-data`. Updates are consent-driven: the Marketplace
+`--keep-data` or `--wipe-data`. The installer also mints the device's setup
+code, the claim code for the Marketplace setup wizard. It goes on the sticker;
+the last line prints it with the device's address, `http://<name>.local`.
+`--setup-code XXXX-XXXX-XXXX` keeps a code already printed, e.g. on a
+reinstall. The code lives in `/var/lib/librepod/setup-code` (root-only) and
+reaches the Marketplace on every boot (`onboarding` module).
+Updates are consent-driven: the Marketplace
 writes intent to ConfigMap `librepod-os/<hostname>` ([contract](docs/updates.md)); the host updater applies
 release tags only (`vX.Y.Z`) and boots the new version once as a trial; the
 old version stays the boot default until the new one passes its health checks. Unattended updates need an
