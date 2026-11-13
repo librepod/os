@@ -1,5 +1,6 @@
 # librepod-update: the owner's CLI (status, check, install, settings) and the
-# units' entry points (tick: what the timer runs). Settings commands keep the
+# units' entry points (tick: what the timer runs; fallback: before k3s on every
+# boot; finish: once the new version is blessed). Settings commands keep the
 # status's state and detail.
 
 usage() { echo "usage: librepod-update status | check | install now|tonight | channel stable|beta | auto on|off | timezone ZONE" >&2; exit 2; }
@@ -8,9 +9,8 @@ current_state() { current_status | jq -r '.state // "up-to-date"'; }
 
 # Rewrites STATUS keeping its state and detail; the args are set_status's
 # filter and its jq args.
-refresh_status() { # [jq filter [, jq args...]]
-  set_status "$(current_state)" "$(current_status | jq -r '.detail // ""')" "$@"
-}
+refresh_status() { status_locked refresh_status_unlocked "$@"; } # [jq filter [, jq args...]]
+refresh_status_unlocked() { set_status_unlocked "$(current_state)" "$(current_status | jq -r '.detail // ""')" "$@"; }
 
 write_settings() { # channel, auto (true|false), timezone
   write_state "$SETTINGS" "$(jq -nc --arg c "$1" --argjson a "$2" --arg z "$3" '{channel: $c, auto: $a, timezone: $z}')"
@@ -19,8 +19,6 @@ write_settings() { # channel, auto (true|false), timezone
 start_service() { systemctl start "$@" librepod-update.service; }
 
 # ---- tick: check, download, decide, install --------------------------------
-
-finish() { :; } # settles the install a record says was in flight (a no-op stub until the next task)
 
 sysupdate() { systemd-sysupdate --definitions="$DEFINITIONS/$(setting channel)" "$@"; }
 
@@ -32,6 +30,8 @@ available() {
 }
 downloaded_version() { cat "$DOWNLOADED" 2>/dev/null || true; }
 in_failed() { grep -qxF "$1" "$FAILED" 2>/dev/null; } # version
+# Rewritten whole, not appended to: a power cut can't tear the line.
+fail_version() { in_failed "$1" || write_state "$FAILED" "$({ cat "$FAILED" 2>/dev/null || true; echo "$1"; })"; } # version
 newer() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$1" ]; } # is $1 above $2
 
 local_date() { TZ=$(setting timezone) date "$@"; } # in the owner's zone
@@ -41,7 +41,7 @@ install_at() { # now inside the window, else the next 02:00 local
   day=$(local_date -d "$at" +%F)
   [ "$((10#$(local_date -d "$at" +%H)))" -lt 2 ] || rel=tomorrow # "+1 day" would read +1 as a zone
   if in_window; then local_date -d "$at" --iso-8601=seconds
-  else local_date -d "$day 02:00 $rel" --iso-8601=seconds; fi
+  else local_date -d "$day 02:00 $rel" --iso-8601=seconds 2>/dev/null || local_date -d "$day 03:00 $rel" --iso-8601=seconds; fi # 02:00 doesn't exist when the clocks spring forward
 }
 
 # Automatic updates are on and the version hasn't failed here.
@@ -116,8 +116,8 @@ abort_install() {
   (
     set +e
     rm -rf "$RECORD" "$SNAPSHOT" "$SNAPSHOT.partial"
-    in_failed "$INSTALL_TO" || echo "$INSTALL_TO" >> "$FAILED" # automatic updates skip it; the owner's request still retries
-    sync "$FAILED" "$STATE_DIR" # the record is gone for good before k3s writes again, or a cut would restore a stale snapshot
+    fail_version "$INSTALL_TO" # automatic updates skip it; the owner's request still retries
+    sync "$STATE_DIR" # the record is gone for good before k3s writes again, or a cut would restore a stale snapshot
     systemctl start k3s.service
     set_status failed "could not install $INSTALL_TO; still on $INSTALL_FROM"
   )
@@ -127,8 +127,8 @@ abort_install() {
 # ends in abort_install.
 install_version() { # version
   INSTALL_TO=$1; INSTALL_FROM=$(booted_version)
+  trap abort_install EXIT # before the record: a failing sync inside its write would leave it behind
   write_record "$INSTALL_FROM" "$1" snapshot
-  trap abort_install EXIT
   set_status installing "installing $1"
   systemctl stop k3s.service
   snapshot_k3s_db
@@ -182,11 +182,68 @@ tick() {
     if [ -e "$RECORD" ]; then finish; return; fi
     UNREACHABLE=
     if check_due; then check; fi
-    download
+    if [ -z "$UNREACHABLE" ]; then download; fi # a stale available would acquire from the new channel's definitions
     decide
     [ ! -e "$RECORD" ] || return 0 # install_version rebooted
     [ -e "$CHECK_NOW" ] || [ "$(request)" = now ] || break
   done
+}
+
+# ---- after the reboot: fallback (before k3s) and finish (once blessed) -------
+
+BLESS_BOOT="${LIBREPOD_BLESS_BOOT:-systemd-bless-boot}"
+
+record_ok() { jq -e 'type == "object" and all(.from, .to, .phase; type == "string" and . != "")' "$RECORD" >/dev/null 2>&1; }
+record_field() { jq -r --arg k "$1" '.[$k] | strings' "$RECORD" 2>/dev/null || true; } # from | to | phase | reason
+
+# Copy beside the data, then swap by rename: K3S_DB is never missing or half-written.
+restore_k3s_db() {
+  mkdir -p "$K3S_DB" && rm -rf "$K3S_DB.restore" && cp -a "$SNAPSHOT" "$K3S_DB.restore" &&
+    sync -f "$K3S_DB.restore" && mv -T --exchange "$K3S_DB.restore" "$K3S_DB" || return 1
+  # The swap is the commit: nothing after it may report a failed restore.
+  sync "$(dirname "$K3S_DB")" || true
+  rm -rf "$K3S_DB.restore" || true # what the swap put aside
+}
+
+fallback() {
+  [ -e "$RECORD" ] || return 0
+  local from to phase reason booted
+  booted=$(booted_version); from=$(record_field from); to=$(record_field to)
+  if ! record_ok || { [ "$booted" != "$from" ] && [ "$booted" != "$to" ]; }; then
+    mv -f "$RECORD" "$RECORD.bad"; sync "$STATE_DIR"
+    set_status failed "the record of the update in flight was unreadable; moved aside"
+    return
+  fi
+  [ "$booted" = "$from" ] || return 0 # on the new version: the health gate decides
+  if [ -d "$SNAPSHOT" ] && ! restore_k3s_db; then
+    set_status failed "could not restore k3s data from before $to"
+    return 1
+  fi
+  phase=$(record_field phase); reason=$(record_field reason)
+  # Gone as soon as the data is back: restored again after k3s ran, it would undo k3s's writes.
+  rm -rf "$SNAPSHOT" "$SNAPSHOT.partial"; sync "$STATE_DIR"
+  if [ "$phase" = installed ] || [ -n "$reason" ] || sysupdate pending >/dev/null 2>&1; then
+    fail_version "$to"
+    sysupdate vacuum --instances-max=1 || true # so that a retry downloads it again
+    rm -f "$DOWNLOADED"
+    set_status rolled-back "$to failed its health check (${reason:-did not finish}); back on $from"
+  else
+    set_status failed "the install of $to was interrupted; nothing changed"
+  fi
+  rm -f "$RECORD"; sync "$STATE_DIR" # last: until then a repeat of this run is harmless
+}
+
+blessed() { local s; s=$("$BLESS_BOOT" status 2>/dev/null) || return 1; [[ $s == good || $s == clean ]]; }
+
+# Settles the install the record says was in flight once its version is blessed.
+# Decides from the booted version, not the phase: the write of "installed" may have failed.
+finish() {
+  local to; to=$(record_field to)
+  if [ -z "$to" ] || [ "$to" != "$(booted_version)" ] || ! blessed; then return 0; fi
+  if in_failed "$to"; then write_state "$FAILED" "$(grep -vxF "$to" "$FAILED" || true)"; fi
+  rm -rf "$SNAPSHOT" "$DOWNLOADED"
+  set_status "done" "updated to $to" # quoted: shellcheck reads a bare done as the keyword
+  rm -f "$RECORD"; sync "$STATE_DIR"
 }
 
 case "${1:-}" in
@@ -217,5 +274,9 @@ case "${1:-}" in
     refresh_status ;;
   tick)
     tick ;;
+  fallback)
+    fallback ;;
+  finish)
+    finish ;;
   *) usage ;;
 esac

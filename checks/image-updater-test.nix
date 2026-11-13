@@ -12,6 +12,7 @@ let
         coreutils
         gnugrep
         gnused
+        util-linux
       ];
     })
     updater
@@ -22,6 +23,7 @@ pkgs.runCommand "image-updater-test"
     buildInputs = with pkgs; [
       bash
       jq
+      util-linux
     ];
   }
   ''
@@ -35,7 +37,7 @@ pkgs.runCommand "image-updater-test"
     mkdir -p $STUBS/bin
     stub() { printf '#!/bin/sh\necho "%s $*" >> "$CALLS_LOG"\n%s\n' "$1" "$2" > $STUBS/bin/$1; chmod +x $STUBS/bin/$1; }
     stub systemctl 'case "$*" in "start k3s"*) r=no; [ ! -e "$LIBREPOD_UPDATES_DIR/record.json" ] || r=yes; echo "record=$r" >> "$CALLS_LOG";; esac'
-    stub systemd-bless-boot 'cat "$STUBS/bless-status"'
+    stub systemd-bless-boot 'cat "$STUBS/bless-status"; [ ! -e "$STUBS/bless-fails" ]'
     stub systemd-sysupdate '
     ch=; for a; do case $a in --definitions=*) ch=''${a##*/};; esac; done
     case " $* " in
@@ -46,7 +48,7 @@ pkgs.runCommand "image-updater-test"
       *" update "*) [ ! -e "$STUBS/update-fails" ];;
       *" pending "*) [ -e "$STUBS/pending" ];;
     esac'
-    fresh() { rm -rf $D $T/run $T/db $STUBS/new-* $STUBS/*-fails $STUBS/pending; mkdir -p $D $T/run $T/db
+    fresh() { rm -rf $D $T/run $T/db $T/db.restore $STUBS/new-* $STUBS/*-fails $STUBS/pending; mkdir -p $D $T/run $T/db
               echo before > $T/db/state.db; booted 0.5.0; echo good > $STUBS/bless-status; : > $CALLS_LOG; unset LIBREPOD_NOW; }
     booted() { echo "IMAGE_VERSION=$1" > $LIBREPOD_OS_RELEASE; }
     offer() { echo "$2" > $STUBS/new-$1; }                       # channel, version
@@ -54,6 +56,12 @@ pkgs.runCommand "image-updater-test"
     st() { jq -r "$1" $D/status.json; }
     called() { grep -qF -- "$1" $CALLS_LOG; }
     not() { ! "$@"; }
+    has() { [[ "$1" == *"$2"* ]]; }                              # text, substring
+    rec() { echo "$1" > $D/record.json; }
+    snap() { mkdir -p $D/k3s-db && echo "$1" > $D/k3s-db/state.db; }
+    # An exported function beats the updater's own PATH (its runtimeInputs go first).
+    sync() { [ ! -e "$STUBS/sync-fails" ] || [ "$*" != "$LIBREPOD_UPDATES_DIR" ] || return 1; command sync "$@"; }
+    export -f sync
     expect() { "$@" || { echo "FAIL: $*"; echo "--- calls"; cat $CALLS_LOG; echo "--- status"; cat $D/status.json 2>/dev/null; exit 1; }; }
 
     # ---- settings, status and the CLI shell -------------------------------
@@ -177,6 +185,68 @@ pkgs.runCommand "image-updater-test"
     # channel switch drops the other channel's download
     fresh; offer beta 0.5.3; offer stable 0.5.1; $U channel beta; $U tick; expect [ "$(cat $D/downloaded)" = 0.5.3 ]
     $U channel stable; $U tick; expect called "acquire 0.5.1"; expect [ "$(cat $D/downloaded)" = 0.5.1 ]
+
+    # ---- fixes carried from the install's review ------------------------------
+    # a failing final sync in the record's write still ends in the one way out
+    fresh; at UTC "2026-11-14 12:00"; offer stable 0.5.1; $U tick; $U install now; touch $STUBS/sync-fails
+    expect not $U tick
+    expect [ ! -e $D/record.json ]; expect called "start k3s"; expect not called reboot
+    # spring forward: 02:00 does not exist that night, so 03:00
+    fresh; offer stable 0.5.1; $U timezone Europe/Berlin; $U auto on; at Europe/Berlin "2026-03-29 00:30"; $U tick
+    expect [ "$(st .installAt)" = 2026-03-29T03:00:00+02:00 ]
+    # an unreachable source downloads nothing: a stale available belongs to the old channel
+    fresh; offer stable 0.5.1; $U tick; $U channel beta; touch $STUBS/list-fails; : > $CALLS_LOG; $U tick
+    expect not called acquire; expect [ "$(st .state)" != downloading ]
+    # status rewrites take turns: the CLI waits for one in progress
+    fresh; rm -f $T/held $T/released
+    ( exec 8> $D/.status.lock; flock 8; : > $T/held; sleep 1; : > $T/released ) &
+    while [ ! -e $T/held ]; do sleep 0.05; done
+    expect $U status; expect [ -e $T/released ]; wait
+
+    # ---- after the reboot: fallback and finish --------------------------------
+    # rolled back: restored, failed list, vacuumed for a retry
+    fresh; rec '{"from":"0.5.0","to":"0.5.1","phase":"installed","reason":"node-not-ready"}'
+    snap before; echo after > $T/db/state.db; echo 0.5.1 > $D/downloaded; $U fallback
+    expect [ "$(cat $T/db/state.db)" = before ]; expect [ "$(st .state)" = rolled-back ]
+    expect grep -qx 0.5.1 $D/failed-versions; expect has "$(st .detail)" node-not-ready
+    expect called "vacuum --instances-max=1"
+    expect [ ! -e $D/record.json ]; expect [ ! -e $D/k3s-db ]; expect [ ! -e $D/downloaded ]; expect [ ! -e $T/db.restore ]
+    # no reason: it never got as far as the gate
+    fresh; rec '{"from":"0.5.0","to":"0.5.1","phase":"installed"}'; snap before; $U fallback
+    expect has "$(st .detail)" "did not finish"
+    # interrupted after a complete snapshot: restored, not in the failed list, download kept
+    fresh; rec '{"from":"0.5.0","to":"0.5.1","phase":"snapshot"}'; snap before; echo 0.5.1 > $D/downloaded; $U fallback
+    expect [ "$(st .state)" = failed ]; expect has "$(st .detail)" interrupted
+    expect not grep -qsx 0.5.1 $D/failed-versions; expect [ -e $D/downloaded ]; expect not called vacuum
+    # interrupted mid-copy: a partial snapshot is never restored
+    fresh; rec '{"from":"0.5.0","to":"0.5.1","phase":"snapshot"}'; mkdir $D/k3s-db.partial; echo junk > $D/k3s-db.partial/state.db
+    $U fallback; expect [ "$(cat $T/db/state.db)" = before ]; expect [ ! -e $D/k3s-db.partial ]
+    # phase never written, but the new version booted and failed
+    fresh; rec '{"from":"0.5.0","to":"0.5.1","phase":"snapshot"}'; snap before; touch $STUBS/pending; $U fallback
+    expect [ "$(st .state)" = rolled-back ]
+    # on the new version: left to the health gate
+    fresh; booted 0.5.1; rec '{"from":"0.5.0","to":"0.5.1","phase":"installed"}'; echo after > $T/db/state.db; $U fallback
+    expect [ -e $D/record.json ]; expect [ "$(cat $T/db/state.db)" = after ]
+    # unreadable record: moved aside, updates go on
+    fresh; echo garbage > $D/record.json; $U fallback; expect [ -e $D/record.json.bad ]; expect [ "$(st .state)" = failed ]
+    offer stable 0.5.1; $U tick; expect called "acquire 0.5.1"
+    # a failed restore keeps the record, the snapshot and the data as they were
+    fresh; rec '{"from":"0.5.0","to":"0.5.1","phase":"installed"}'; snap before; echo after > $T/db/state.db
+    dd if=/dev/zero of=$D/k3s-db/big bs=1k count=16 2>/dev/null
+    ( ulimit -c 0; ulimit -f 4; expect not $U fallback 2>/dev/null )
+    expect [ -e $D/record.json ]; expect [ -e $D/k3s-db/state.db ]; expect [ "$(cat $T/db/state.db)" = after ]
+    expect has "$(st .detail)" "could not restore k3s data from before 0.5.1"; expect not grep -qsx 0.5.1 $D/failed-versions
+    # finish: only once blessed; a failing bless-boot is not blessed
+    fresh; booted 0.5.1; rec '{"from":"0.5.0","to":"0.5.1","phase":"installed"}'; snap before; echo 0.5.1 > $D/failed-versions
+    echo indeterminate > $STUBS/bless-status; expect $U finish; expect [ -e $D/record.json ]
+    echo good > $STUBS/bless-status; touch $STUBS/bless-fails; expect $U finish; expect [ -e $D/record.json ]
+    rm $STUBS/bless-fails; expect env LIBREPOD_BLESS_BOOT=$T/no-such-bless-boot $U finish; expect [ -e $D/record.json ]
+    $U finish
+    expect [ "$(st .state)" = done ]; expect [ ! -e $D/record.json ]; expect [ ! -e $D/k3s-db ]
+    expect not grep -qsx 0.5.1 $D/failed-versions
+    # tick finishes a record left over from a power cut after blessing
+    fresh; booted 0.5.1; rec '{"from":"0.5.0","to":"0.5.1","phase":"installed"}'; echo clean > $STUBS/bless-status
+    $U tick; expect [ "$(st .state)" = done ]
 
     echo "image-updater scenarios passed"; touch $out
   ''

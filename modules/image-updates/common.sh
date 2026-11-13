@@ -62,11 +62,16 @@ valid_zone() { # zone
 
 current_status() { jq -ce 'select(type == "object")' "$STATUS" 2>/dev/null || echo "$INITIAL_STATUS"; }
 
+# The CLI and the tick rewrite STATUS at once: one rewrite at a time, or one
+# loses the other's update.
+status_locked() { ( flock 9; "$@" ) 9>"$STATE_DIR/.status.lock"; } # command, args…
+
 # Rewrites STATUS: sets state and detail, applies FILTER (available, lastCheck
 # or installAt) with the jq args after it, then refreshes what the files decide.
 # The filter's jq args must not be named ctx. `updated` moves only when
 # something else in the status did.
-set_status() { # state, detail [, jq filter [, jq args…]]
+set_status() { status_locked set_status_unlocked "$@"; } # state, detail [, jq filter [, jq args…]]
+set_status_unlocked() {
   local state=$1 detail=$2 filter=${3:-.} ctx new
   shift $(( $# < 3 ? $# : 3 ))
   ctx=$(jq -nc --arg state "$state" --arg detail "$detail" --arg current "$(booted_version)" \
