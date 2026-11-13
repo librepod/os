@@ -134,6 +134,10 @@ jobs:
     runs-on: ubuntu-latest
     # Holds RELEASE_SIGNING_KEY; see "Phase 4" in the A/B image updates design spec.
     environment: release-signing
+    # Overlapping copies to beta could leave its SHA256SUMS and signature from different candidates.
+    concurrency:
+      group: beta-channel
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v6
         with:
@@ -188,7 +192,7 @@ jobs:
           old=""
           if gh release view beta >/dev/null 2>&1; then
             old="$(gh release view beta --json assets --jq '.assets[].name')"
-            held="$(sed -n 's/^librepod-[^_]*_\(.*\)\.efi$/\1/p' <<<"$old" | head -n1)"
+            held="$(sed -n 's/^librepod-[^_]*_\(.*\)\.efi$/\1/p' <<<"$old" | sort -V | tail -n1)"
             if [ -n "$held" ] && [ "$(printf '%s\n' "$held" "${TAG#v}" | sort -V | tail -n1)" = "$held" ]; then
               echo "beta holds $held, at or above ${TAG#v}: left as it is"; exit 0
             fi
@@ -204,8 +208,8 @@ jobs:
 
           keep="$(basename -a "${imgs[@]}" "${sums[@]}")"
           while IFS= read -r a; do
-            [ -z "$a" ] || grep -qxF "$a" <<<"$keep" || gh release delete-asset beta "$a" -y
+            [ -z "$a" ] || grep -qxF "$a" <<<"$keep" || gh release delete-asset beta "$a" -y </dev/null
           done <<<"$old"
 
-          git push -f origin "HEAD:refs/tags/beta"
           gh release edit beta --notes "Candidate $TAG"
+          git push -f origin "HEAD:refs/tags/beta"

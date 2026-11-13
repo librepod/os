@@ -31,8 +31,17 @@ jobs:
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::Version must be semver X.Y.Z (got '$INPUT_VERSION')"; exit 1
           fi
-          if [ "$(gh release view "v$version" --json isPrerelease --jq .isPrerelease)" != true ]; then
+          info="$(gh release view "v$version" --json isDraft,isPrerelease,assets \
+            --jq '[.isDraft, .isPrerelease, ([.assets[].name] | index("SHA256SUMS.gpg") != null)] | @tsv')"
+          read -r draft prerelease signed <<<"$info"
+          if [ "$draft" != false ]; then
+            echo "::error::v$version is a draft, not a published candidate"; exit 1
+          fi
+          if [ "$prerelease" != true ]; then
             echo "::error::v$version is not a candidate: it is not a prerelease"; exit 1
+          fi
+          if [ "$signed" != true ]; then
+            echo "::error::v$version has no SHA256SUMS.gpg: devices would refuse it"; exit 1
           fi
           latest="$(gh release view --json tagName --jq .tagName || true)"
           if ! [ "$(printf '%s\n' "$latest" "v$version" | sort -V | tail -n1)" = "v$version" ] \
