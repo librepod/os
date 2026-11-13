@@ -39,17 +39,23 @@ pkgs.runCommand "image-updater-test"
     stub systemctl 'case "$*" in "start k3s"*) r=no; [ ! -e "$LIBREPOD_UPDATES_DIR/record.json" ] || r=yes; echo "record=$r" >> "$CALLS_LOG";;
       "stop k3s"*) [ ! -e "$STUBS/cut-on-stop" ] || kill -9 $PPID;; esac'
     stub systemd-bless-boot 'cat "$STUBS/bless-status"; [ ! -e "$STUBS/bless-fails" ]'
+    # list as 260 answers it: `list` names every version, a download held in the
+    # slot (STUBS/held, any channel's) too; `list V` says whether the source has V.
     stub systemd-sysupdate '
-    ch=; for a; do case $a in --definitions=*) ch=''${a##*/};; esac; done
+    ch=; last=; for a; do case $a in --definitions=*) ch=''${a##*/};; esac; last=$a; done
+    new=$(cat "$STUBS/new-$ch" 2>/dev/null || true)
     case " $* " in
-      *" check-new "*) v=$(cat "$STUBS/new-$ch" 2>/dev/null) && [ -n "$v" ] && echo "$v";;
-      *" list "*) [ ! -e "$STUBS/list-fails" ];;
+      *" list "*) [ ! -e "$STUBS/list-fails" ] || exit 1
+        case $last in
+          list) printf "{\"all\":[%s]}\n" "$(for v in $(cat "$STUBS/held" 2>/dev/null) $new; do printf "\"%s\"," "$v"; done | sed "s/,\$//")";;
+          *) a=false; [ "$last" != "$new" ] || a=true; echo "{\"version\":\"$last\",\"available\":$a}";;
+        esac;;
       *" acquire "*) if [ -e "$STUBS/press-now-during-acquire" ]; then rm "$STUBS/press-now-during-acquire"; echo now > "$LIBREPOD_UPDATES_DIR/request"; fi
                      [ ! -e "$STUBS/acquire-fails" ];;
       *" update "*) [ ! -e "$STUBS/update-fails" ];;
-      *" pending "*) [ -e "$STUBS/pending" ];;
+      *" pending "*) [ -e "$STUBS/pending" ];; # 260 says yes while a download is acquired
     esac'
-    fresh() { rm -rf $D $T/run $T/db $T/db.restore $STUBS/new-* $STUBS/*-fails $STUBS/pending; mkdir -p $D $T/run $T/db
+    fresh() { rm -rf $D $T/run $T/db $T/db.restore $STUBS/new-* $STUBS/*-fails $STUBS/pending $STUBS/held; mkdir -p $D $T/run $T/db
               echo before > $T/db/state.db; booted 0.5.0; echo good > $STUBS/bless-status; : > $CALLS_LOG; unset LIBREPOD_NOW; }
     booted() { echo "IMAGE_VERSION=$1" > $LIBREPOD_OS_RELEASE; }
     offer() { echo "$2" > $STUBS/new-$1; }                       # channel, version
@@ -125,14 +131,14 @@ pkgs.runCommand "image-updater-test"
     # ---- the tick -----------------------------------------------------------
     # check finds and downloads; nothing installs by itself
     fresh; offer stable 0.5.1; expect $U tick
-    expect called "--definitions=/defs/stable check-new"; expect called "acquire 0.5.1"
+    expect called "--definitions=/defs/stable --json=short list"; expect called "acquire 0.5.1"
     expect [ "$(st .available)/$(st .downloaded)/$(st .state)" = 0.5.1/true/ready ]; expect not called "update --offline"
     rm -rf $T/run; expect $U tick; expect [ -e $T/run/checked ]          # the tick makes its own run dir
     # never a lower version
     fresh; offer stable 0.4.9; expect $U tick; expect [ "$(st .available)" = null ]; expect not called acquire
     # once per boot, then every 6 h
-    fresh; offer stable 0.5.1; at UTC "2026-11-14 12:00"; $U tick; : > $CALLS_LOG; $U tick; expect not called check-new
-    at UTC "2026-11-14 18:00"; $U tick; expect called check-new
+    fresh; offer stable 0.5.1; at UTC "2026-11-14 12:00"; $U tick; : > $CALLS_LOG; $U tick; expect not called "short list"
+    at UTC "2026-11-14 18:00"; $U tick; expect called "short list"
     # a newer version replaces the download
     offer stable 0.5.2; touch $D/check-now; $U tick
     expect called "vacuum --instances-max=1"; expect called "acquire 0.5.2"; expect [ "$(cat $D/downloaded)" = 0.5.2 ]
@@ -192,6 +198,9 @@ pkgs.runCommand "image-updater-test"
     # channel switch drops the other channel's download
     fresh; offer beta 0.5.3; offer stable 0.5.1; $U channel beta; $U tick; expect [ "$(cat $D/downloaded)" = 0.5.3 ]
     $U channel stable; $U tick; expect called "acquire 0.5.1"; expect [ "$(cat $D/downloaded)" = 0.5.1 ]
+    # another channel's download held in the slot is not what this channel offers
+    fresh; offer stable 0.5.2; echo 0.5.3 > $STUBS/held; $U tick
+    expect [ "$(st .available)" = 0.5.2 ]; expect called "acquire 0.5.2"
 
     # ---- fixes carried from the install's review ------------------------------
     # a failing final sync in the record's write still ends in the one way out
@@ -236,15 +245,17 @@ pkgs.runCommand "image-updater-test"
     # no reason: it never got as far as the gate
     fresh; rec '{"from":"0.5.0","to":"0.5.1","phase":"installed"}'; snap before; $U fallback
     expect has "$(st .detail)" "did not finish"
-    # interrupted after a complete snapshot: restored, not in the failed list, download kept
-    fresh; rec '{"from":"0.5.0","to":"0.5.1","phase":"snapshot"}'; snap before; echo 0.5.1 > $D/downloaded; $U fallback
+    # interrupted after a complete snapshot: restored, not in the failed list, download kept,
+    # though the download is acquired (sysupdate pending would say a newer version is installed)
+    fresh; rec '{"from":"0.5.0","to":"0.5.1","phase":"snapshot"}'; snap before; echo 0.5.1 > $D/downloaded
+    touch $STUBS/pending; $U fallback
     expect [ "$(st .state)" = failed ]; expect has "$(st .detail)" interrupted
     expect not grep -qsx 0.5.1 $D/failed-versions; expect [ -e $D/downloaded ]; expect not called vacuum
     # interrupted mid-copy: a partial snapshot is never restored
     fresh; rec '{"from":"0.5.0","to":"0.5.1","phase":"snapshot"}'; mkdir $D/k3s-db.partial; echo junk > $D/k3s-db.partial/state.db
     $U fallback; expect [ "$(cat $T/db/state.db)" = before ]; expect [ ! -e $D/k3s-db.partial ]
-    # phase never written, but the new version booted and failed
-    fresh; rec '{"from":"0.5.0","to":"0.5.1","phase":"snapshot"}'; snap before; touch $STUBS/pending; $U fallback
+    # phase never written, but the new version booted and its gate gave a reason
+    fresh; rec '{"from":"0.5.0","to":"0.5.1","phase":"snapshot","reason":"k3s"}'; snap before; $U fallback
     expect [ "$(st .state)" = rolled-back ]
     # on the new version: left to the health gate
     fresh; booted 0.5.1; rec '{"from":"0.5.0","to":"0.5.1","phase":"installed"}'; echo after > $T/db/state.db; $U fallback

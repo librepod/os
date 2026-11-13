@@ -67,12 +67,24 @@ check_due() {
   [ ! -e "$RUN_DIR/checked" ] || stale || install_due
 }
 
+# The newest version the channel offers above the booted one; fails when the
+# source can't be read. Not check-new: on 260 it offers an acquired download,
+# another channel's too. `list` names every version; `list V` says if the source has it.
+offered() {
+  local json v
+  json=$(sysupdate --json=short list) || return 1
+  while read -r v; do
+    if [[ $v =~ ^[0-9]+(\.[0-9]+)*$ ]] && newer "$v" "$(booted_version)"; then
+      json=$(sysupdate --json=short list "$v") || return 1
+      if jq -e '.available == true' <<< "$json" > /dev/null; then echo "$v"; return 0; fi
+    fi
+  done < <(jq -r '.all[]? | strings' <<< "$json" | sort -rV)
+}
+
 # Sets available and lastCheck; or UNREACHABLE, leaving everything else as it was.
 check() {
-  local out new=''
-  if out=$(sysupdate check-new); then
-    if [[ $out =~ ^[0-9]+(\.[0-9]+)*$ ]] && newer "$out" "$(booted_version)"; then new=$out; fi
-  elif ! sysupdate list >/dev/null; then # check-new also fails when nothing is newer
+  local new
+  if ! new=$(offered); then
     UNREACHABLE="could not reach the $(setting channel) update source"
     set_status "$(current_state)" "$UNREACHABLE"
     return
@@ -233,7 +245,9 @@ fallback() {
   phase=$(record_field phase); reason=$(record_field reason)
   # Gone as soon as the data is back: restored again after k3s ran, it would undo k3s's writes.
   drop_snapshot
-  if [ "$phase" = installed ] || [ -n "$reason" ] || sysupdate pending >/dev/null 2>&1; then
+  # By phase, not `sysupdate pending`: on 260 that counts an acquired download
+  # as installed. A reason comes only from the new version's gate.
+  if [ "$phase" = installed ] || [ -n "$reason" ]; then
     fail_version "$to"
     sysupdate vacuum --instances-max=1 || true # so that a retry downloads it again
     rm -f "$DOWNLOADED"
