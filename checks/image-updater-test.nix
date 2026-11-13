@@ -69,7 +69,8 @@ pkgs.runCommand "image-updater-test"
     for bad in Mars/Base ../../etc/passwd Europe/../../etc/passwd "" "Europe/Minsk; reboot"; do
       expect not $U timezone "$bad"
     done
-    expect [ "$(st .settings.timezone)" = Etc/GMT-3 ]
+    expect [ "$(jq -r .timezone $D/settings.json)" = Etc/GMT-3 ]
+    expect $U auto off; expect [ "$(jq -r .auto $D/settings.json)" = false ]
     expect not $U channel nightly; expect not $U auto maybe; expect not $U install later; expect not $U frobnicate
     expect $U install tonight; expect [ "$(cat $D/request)" = tonight ]
     echo garbage > $D/settings.json; expect $U status; expect [ "$(st .settings.channel)" = stable ]
@@ -79,11 +80,14 @@ pkgs.runCommand "image-updater-test"
     expect [ "$(st .settings.channel)/$(st .settings.auto)/$(st .settings.timezone)" = beta/false/UTC ]
     echo '{"channel":5,"auto":"yes","timezone":["x"]}' > $D/settings.json; expect $U status
     expect [ "$(st .settings.channel)/$(st .settings.auto)/$(st .settings.timezone)" = stable/false/UTC ]
+    echo '{"channel":"nightly"}' > $D/settings.json; expect $U status; expect [ "$(st .settings.channel)" = stable ]
+    echo '{}' > $D/status.json; expect $U status; expect [ "$(st .state)/$(st .detail)" = up-to-date/ ]
 
     # `updated` is UTC and moves only when the status does
     fresh; at Europe/Minsk "2026-11-14 13:00"
     expect $U status; expect [ "$(st .updated)" = 2026-11-14T10:00:00Z ]
     at Europe/Minsk "2026-11-14 14:00"; expect $U status; expect [ "$(st .updated)" = 2026-11-14T10:00:00Z ]
+    ino=$(stat -c %i $D/status.json); expect $U status; expect [ "$(stat -c %i $D/status.json)" = $ino ]  # unchanged: not rewritten
     expect $U auto on; expect [ "$(st .updated)" = 2026-11-14T11:00:00Z ]
 
     # derived fields come from the files; installAt only while scheduled
@@ -102,5 +106,57 @@ pkgs.runCommand "image-updater-test"
     expect not $U install later; expect [ ! -e $D/request ]
     expect $U install now; expect [ "$(cat $D/request)" = now ]
     expect called "systemctl start --no-block librepod-update.service"
+
+    # ---- the tick -----------------------------------------------------------
+    # check finds and downloads; nothing installs by itself
+    fresh; offer stable 0.5.1; expect $U tick
+    expect called "--definitions=/defs/stable check-new"; expect called "acquire 0.5.1"
+    expect [ "$(st .available)/$(st .downloaded)/$(st .state)" = 0.5.1/true/ready ]; expect not called "update --offline"
+    # never a lower version
+    fresh; offer stable 0.4.9; expect $U tick; expect [ "$(st .available)" = null ]; expect not called acquire
+    # once per boot, then every 6 h
+    fresh; offer stable 0.5.1; at UTC "2026-11-14 12:00"; $U tick; : > $CALLS_LOG; $U tick; expect not called check-new
+    at UTC "2026-11-14 18:00"; $U tick; expect called check-new
+    # a newer version replaces the download
+    offer stable 0.5.2; touch $D/check-now; $U tick
+    expect called "vacuum --instances-max=1"; expect called "acquire 0.5.2"; expect [ "$(cat $D/downloaded)" = 0.5.2 ]
+    # install now: the newest at install time, k3s stopped and snapshotted first
+    fresh; offer stable 0.5.1; $U tick; offer stable 0.5.2; $U install now; $U tick
+    expect called "update --offline 0.5.2"; expect called "systemctl reboot"
+    expect [ "$(grep -n 'stop k3s' $CALLS_LOG | cut -d: -f1)" -lt "$(grep -n 'update --offline' $CALLS_LOG | cut -d: -f1)" ]
+    expect [ "$(jq -r '.from+" "+.to+" "+.phase' $D/record.json)" = "0.5.0 0.5.2 installed" ]
+    expect [ "$(cat $D/k3s-db/state.db)" = before ]; expect [ ! -e $D/request ]
+    # now during a download: one run, one install
+    fresh; offer stable 0.5.1; touch $STUBS/press-now-during-acquire; $U tick; expect called "update --offline 0.5.1"
+    # now with nothing newer
+    fresh; $U install now; $U tick
+    expect [ "$(st .state)" = up-to-date ]; expect [ ! -e $D/request ]; expect not called reboot
+    # update --offline fails: record gone before k3s starts again
+    fresh; offer stable 0.5.1; touch $STUBS/update-fails; $U install now; $U tick
+    expect [ ! -e $D/record.json ]; expect [ ! -e $D/k3s-db ]; expect called "start k3s"; expect [ "$(st .state)" = failed ]
+    # automatic only in the window, 05:00 excluded
+    fresh; offer stable 0.5.1; $U timezone Europe/Minsk; $U auto on; at Europe/Minsk "2026-11-14 12:00"; $U tick
+    expect [ "$(st .state)/$(st .installAt)" = "scheduled/2026-11-15T02:00:00+03:00" ]; expect not called "update --offline"
+    at Europe/Minsk "2026-11-15 05:00"; $U tick; expect not called "update --offline"
+    at Europe/Minsk "2026-11-15 02:10"; $U tick; expect called "update --offline 0.5.1"
+    # tonight without automatic updates
+    fresh; offer stable 0.5.1; $U timezone Europe/Minsk; $U install tonight; at Europe/Minsk "2026-11-14 23:00"; $U tick
+    expect [ "$(st .state)" = scheduled ]; at Europe/Minsk "2026-11-15 03:00"; $U tick; expect called "update --offline 0.5.1"
+    # failed list: automatic skips it, the owner's install retries it
+    fresh; offer stable 0.5.1; echo 0.5.1 > $D/failed-versions; $U auto on; at UTC "2026-11-15 03:00"; $U tick
+    expect not called "update --offline"; expect [ "$(st '.failedVersions[0]')" = 0.5.1 ]
+    $U install now; $U tick; expect called "update --offline 0.5.1"
+    # a final state stays until something new turns up
+    fresh; offer stable 0.5.1; echo 0.5.1 > $D/failed-versions; $U tick
+    jq '.state="rolled-back"' $D/status.json > $T/s && mv $T/s $D/status.json
+    touch $D/check-now; $U tick; expect [ "$(st .state)" = rolled-back ]
+    offer stable 0.5.2; touch $D/check-now; $U tick; expect [ "$(st .state)" = ready ]
+    # an unreachable source keeps the state
+    fresh; touch $STUBS/list-fails; $U tick; expect [ "$(st .state)" = up-to-date ]
+    expect [ "$(st .detail)" = "could not reach the stable update source" ]
+    # channel switch drops the other channel's download
+    fresh; offer beta 0.5.3; offer stable 0.5.1; $U channel beta; $U tick; expect [ "$(cat $D/downloaded)" = 0.5.3 ]
+    $U channel stable; $U tick; expect called "acquire 0.5.1"; expect [ "$(cat $D/downloaded)" = 0.5.1 ]
+
     echo "image-updater scenarios passed"; touch $out
   ''

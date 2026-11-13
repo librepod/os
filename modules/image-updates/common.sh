@@ -22,7 +22,7 @@ K3S_DB="${LIBREPOD_K3S_DB:-/var/lib/rancher/k3s/server/db}"
 OS_RELEASE="${LIBREPOD_OS_RELEASE:-/etc/os-release}"
 DEFINITIONS="${LIBREPOD_DEFINITIONS:-/etc/librepod/sysupdate}"   # one directory per channel
 CHANNELS="${LIBREPOD_CHANNELS:-/etc/librepod/channels.json}"     # {stable: url, beta: url}
-TZDIR="${TZDIR:-/etc/zoneinfo}"
+export TZDIR="${TZDIR:-/etc/zoneinfo}"   # exported: date reads zones from it
 }
 
 INITIAL_STATUS='{"state":"up-to-date","available":null,"lastCheck":null,"installAt":null,"detail":"not checked yet"}'
@@ -30,7 +30,8 @@ INITIAL_STATUS='{"state":"up-to-date","available":null,"lastCheck":null,"install
 # Write-then-rename: the scripts read these files after a power cut.
 # Synced both sides of the rename: ext4 holds a rename in memory for ~5 s, and
 # a power cut in that window would bring back the previous content.
-write_state() { echo "$2" > "$1.new" && sync "$1.new" && mv -f "$1.new" "$1" && sync "$STATE_DIR"; } # file in STATE_DIR, content
+# The temp file is the writer's own: the CLI and the service can write STATUS at once.
+write_state() { echo "$2" > "$1.new.$$" && sync "$1.new.$$" && mv -f "$1.new.$$" "$1" && sync "$STATE_DIR"; } # file in STATE_DIR, content
 
 now() { echo "${LIBREPOD_NOW:-$(date +%s)}"; } # epoch seconds
 # One format everywhere: the bridge compares these as strings.
@@ -44,12 +45,14 @@ booted_version() {
 }
 
 # The defaults stand until onboarding, and for a file that is missing,
-# unreadable, or has the key missing or of the wrong type.
+# unreadable, or has the key missing or of the wrong type, or a channel other
+# than stable or beta (the channel becomes part of a path).
 setting() { # key
   { cat "$SETTINGS" 2>/dev/null || true; } | jq -Rsr --arg k "$1" '
     {channel: "stable", auto: false, timezone: "UTC"} as $d
     | (try fromjson catch null | try .[$k] catch null) as $v
-    | if ($v | type) == ($d[$k] | type) then $v else $d[$k] end'
+    | if ($v | type) == ($d[$k] | type) and ($k != "channel" or ($v | IN("stable", "beta")))
+      then $v else $d[$k] end'
 }
 
 # The zone becomes part of a path, so the shape is checked before the file.
@@ -80,5 +83,6 @@ set_status() { # state, detail [, jq filter [, jq args…]]
     | .downloaded = (.available != null and .available == $ctx.downloaded)
     | .installAt = (if .state == "scheduled" then .installAt else null end)
     | .updated = (if del(.updated) == ($old | del(.updated)) then $old.updated else $ctx.updated end)')
-  write_state "$STATUS" "$new"
+  # Same as on disk: nothing to write, nothing to sync.
+  [ "$new" = "$(cat "$STATUS" 2>/dev/null || true)" ] || write_state "$STATUS" "$new"
 }
