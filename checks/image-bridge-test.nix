@@ -76,13 +76,14 @@ pkgs.runCommand "image-bridge-test"
     done
     # no usable rev: nothing applied, nothing recorded, nothing shown
     for bad in '{"channel":"beta","auto":true,"timezone":"UTC"}' '{"rev":"20","channel":"beta","auto":true,"timezone":"UTC"}' \
-               '{"rev":20.5,"channel":"beta","auto":true,"timezone":"UTC"}' '{"rev":0,"channel":"beta","auto":true,"timezone":"UTC"}' \
+               '{"rev":20.5,"channel":"beta","auto":true,"timezone":"UTC"}' '{"rev":20.0,"channel":"beta","auto":true,"timezone":"UTC"}' \
+               '{"rev":1e3,"channel":"beta","auto":true,"timezone":"UTC"}' '{"rev":0,"channel":"beta","auto":true,"timezone":"UTC"}' \
                '{"rev":1e30,"channel":"beta","auto":true,"timezone":"UTC"}' '{"rev":"20; reboot","channel":"beta","auto":true,"timezone":"UTC"}' \
                'not json' '[]' '5'; do
       : > $CALLS_LOG; ui settings.json "$bad"; expect $B; expect not called "librepod-update"
       expect [ "$(pub .handled.settings)" = 15 ]; expect has "$(pub .detail)" "settings rev 15 rejected"
     done
-    for bad in '{"id":8,"when":"later"}' '{"id":"9; reboot","when":"now"}' '{"id":9.5,"when":"now"}' '{"id":0,"when":"now"}' 'not json' '[]'; do
+    for bad in '{"id":8,"when":"later"}' '{"id":"9; reboot","when":"now"}' '{"id":9.5,"when":"now"}' '{"id":9.0,"when":"now"}' '{"id":1e3,"when":"now"}' '{"id":0,"when":"now"}' 'not json' '[]'; do
       : > $CALLS_LOG; ui install.json "$bad"; expect $B; expect not called "librepod-update"
     done
     expect [ "$(pub .handled.install)" = 8 ]; expect has "$(pub .detail)" "install id 8 rejected"
@@ -111,6 +112,15 @@ pkgs.runCommand "image-bridge-test"
     : > $STUBS/patches; expect $B; expect [ ! -s $STUBS/patches ]
     echo '{"metadata":{}}' > $STUBS/cm.json; expect $B; expect [ "$(pub .state)" = ready ]
     expect [ "$(jq -c 'keys' $STUBS/patches)" = '["data"]' ]; expect [ "$(jq -c '.data | keys' $STUBS/patches)" = '["status.json"]' ]
+
+    # a status that is missing or garbage still publishes what was handled, and the rejection
+    cp $D/status.json $T/status.keep
+    for bad in missing garbage; do
+      rm -f $D/status.json; [ $bad = missing ] || echo garbage > $D/status.json
+      expect $B; expect [ "$(pub 'keys | join(",")')" = detail,handled ]
+      expect [ "$(pub '.handled | "\(.settings)/\(.install)"')" = 31/9 ]; expect has "$(pub .detail)" "install id 8 rejected"
+    done
+    cp $T/status.keep $D/status.json
 
     echo "image-bridge scenarios passed"; touch $out
   ''

@@ -7,27 +7,28 @@
 
 NAMESPACE=librepod-os # the OS's own: the OS doesn't hard-code app namespaces
 CONFIGMAP=librepod-os-update
-BRIDGE="$STATE_DIR/bridge.json" # {settings, install: the last rev and id handled, rejected: {at, detail} | null, published}
+BRIDGE="$STATE_DIR/bridge.json" # {settings, install: the last rev and id handled, rejected: {at, detail} | null}
 
 kc() { kubectl --request-timeout=20s "$@"; }
 
-# Missing or unreadable: nothing handled yet. Every CLI call is idempotent, so
-# an answer handled again does no harm.
+# Missing or unreadable: nothing handled yet, so an answer still in the
+# ConfigMap (an install `now` too) is applied again.
 state=$({ cat "$BRIDGE" 2>/dev/null || true; } | jq -Rsc 'try fromjson catch null
   | if type == "object" then . else {} end
-  | {settings: (.settings // 0), install: (.install // 0), rejected: (.rejected // null), published: (.published // "")}')
+  | {settings: (.settings // 0), install: (.install // 0), rejected: (.rejected // null)}')
 
 # Applies a change to the state and writes it out.
-put() { state=$(jq -c "$@" <<< "$state") && write_state "$BRIDGE" "$state"; } # jq args, filter last
+put() { state=$(jq -c "$@" <<< "$state") && write_state "$BRIDGE" "$state"; } # jq args, then the filter
 
 # The answer under a key: its JSON when it is an object, else {}. A missing
 # .data or key reads as empty.
 answer() { jq -c --arg k "$1" '(try .data[$k] catch null) | (try fromjson catch null) | if type == "object" then . else {} end' <<< "$cm"; } # key
 
-# The answer's rev or id, when it is a whole number from 1 to 999999999999999 and
-# above the last one handled; else nothing. (Bigger numbers stop being exact.)
+# The answer's rev or id, when it is written as a whole number from 1 to
+# 999999999999999 (no 3.0 or 1e3: the literal is echoed as written; bigger
+# numbers stop being exact) and above the last one handled; else nothing.
 fresh() { jq -r --arg f "$1" --argjson last "$(jq ".$2" <<< "$state")" \
-  '.[$f] | select(type == "number" and . == floor and . >= 1 and . <= 999999999999999 and . > $last)' <<< "$3"; } # field, state key, answer
+  '.[$f] | select(type == "number" and (tojson | test("^[0-9]+$")) and . >= 1 and . <= 999999999999999 and . > $last)' <<< "$3"; } # field, state key, answer
 
 # Marks a rev or id handled, with the reason when it was refused, in one write.
 # `at` moves only for a reason not shown yet.
@@ -77,12 +78,10 @@ out=$({ cat "$STATUS" 2>/dev/null || true; } | jq -Rsc --argjson b "$state" 'try
   | if type == "object" then . else {} end
   | . + {handled: {settings: $b.settings, install: $b.install}}
   | if $b.rejected != null and $b.rejected.at >= (.updated // "") then .detail = $b.rejected.detail else . end')
-# Also when the ConfigMap lost it (deleted, or k3s restored from before): the
-# status was published once, but it isn't there.
+# Against what the ConfigMap holds, so a deleted one, or one k3s restored from
+# before, gets it again.
 live=$(jq -r '(try .data["status.json"] catch null) // ""' <<< "$cm")
-if [ "$out" != "$(jq -r .published <<< "$state")" ] || [ "$out" != "$live" ]; then
+if [ "$out" != "$live" ]; then
   kc -n "$NAMESPACE" patch configmap "$CONFIGMAP" --type merge \
     -p "$(jq -nc --arg s "$out" '{data: {"status.json": $s}}')" > /dev/null
-  # shellcheck disable=SC2016 # jq variable
-  put '.published = $s' --arg s "$out"
 fi
