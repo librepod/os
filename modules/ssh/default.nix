@@ -16,7 +16,7 @@ in
       Banner = lib.mkDefault "${banner}";
       PermitRootLogin = "yes";
       PasswordAuthentication = true;
-      # Key or password; modules/identity requires both.
+      # Key or password; image devices (modules/identity) take keys only.
       AuthenticationMethods = lib.mkDefault "publickey password";
     };
   };

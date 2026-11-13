@@ -43,7 +43,7 @@ nix fmt -- --check
 
 A device is `lib.mkDevice { name, version, device, modules }`: the shared base stack (`applianceModules` in `flake.nix`, which the E2E VM runs too), plus a hardware profile from `hw/<name>/` (boot loader, kernel, hardware facts) or any module path, plus the device's own modules (install-day facts like the disk layout and `stateVersion`, then identity). The device flake in `/etc/nixos` calls it; the updater repins that flake's `librepod` input.
 
-An image device is `lib.mkImage { device, version, modules }`: `imageModules` (the base stack without Nix, the updater, disko or per-device users) plus the same hardware profile, built as one A/B disk image by `modules/image`. Nothing per-device is in it; `modules/identity` lists what each device keeps outside the image. `librepod-install` (`pkgs/librepod-install`) writes the image to a device's OS disk, with its name and data disk on root, and registers the boot entry.
+An image device is `lib.mkImage { device, version, modules }`: `imageModules` (the base stack without Nix, the updater, disko or per-device users) plus the same hardware profile, built as one A/B disk image by `modules/image`. Nothing per-device is in it; `modules/identity` lists what each device keeps outside the image. `librepod-install` (`pkgs/librepod-install`) writes the image to a device's OS disk, with its name, data disk and optional SSH keys on root, and registers the boot entry.
 
 ## Nix Style
 

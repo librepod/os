@@ -8,11 +8,13 @@
 # - /etc/librepod/data-partuuid: the data partition's GPT UUID and a newline
 #   (installer, phase 3)
 # - data disk: one GPT partition labelled librepod-data, ext4, found by that
-#   UUID: PVs at /mnt/k3s
+#   UUID: PVs at /mnt/k3s (modules/data-disk)
 # - /var/lib/librepod/setup-code: the sticker's claim code, root-only
 #   (installer; modules/onboarding hands it to marketplace-ui)
-# The generic password is console-only: sshd wants a key and a password, and
-# no key ships.
+# - /etc/ssh/authorized_keys.d/librepod: SSH public keys, root's, 0644
+#   (installer, --ssh-key); without it no SSH until a key is added at the
+#   console to ~librepod/.ssh/authorized_keys
+# SSH takes keys only; the generic password is console-only.
 { pkgs, lib, ... }:
 {
   # The name lives in /etc/hostname, and NixOS writes none when this is
@@ -24,9 +26,13 @@
   # profile sets this false.
   users.mutableUsers = lib.mkForce true;
 
-  # Key and password. modules/ssh's "publickey password" means key OR
-  # password, which would make the generic password a LAN login.
-  services.openssh.settings.AuthenticationMethods = "publickey,password";
+  # Keys only: the generic password must never be a LAN login. modules/ssh
+  # sets PasswordAuthentication without a priority, for the fleet.
+  services.openssh.settings = {
+    AuthenticationMethods = "publickey";
+    PasswordAuthentication = lib.mkForce false;
+    KbdInteractiveAuthentication = false;
+  };
 
   users.defaultUserShell = pkgs.zsh;
   # initialPassword applies once, when the account is created on first boot.
