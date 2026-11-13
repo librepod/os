@@ -175,7 +175,7 @@ hostPkgs.testers.runNixOSTest {
               time.sleep(5)
 
       def reconnect(timeout=300):
-          # Same dance as trial-spike: reclaim the backdoor shell once, cleanly.
+          # Reclaim the backdoor shell once, cleanly.
           deadline = time.time() + timeout
           time.sleep(10)
           while time.time() < deadline:
