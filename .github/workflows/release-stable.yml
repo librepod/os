@@ -39,7 +39,8 @@ jobs:
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::Version must be semver X.Y.Z (got '$INPUT_VERSION')"; exit 1
           fi
-          latest="$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)"
+          # Stable tags only: sort -V ranks v1.0.0-rc.1 above v1.0.0.
+          latest="$(git tag --list 'v[0-9]*' --sort=-v:refname | grep -v -- - | head -n1)"
           if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
             echo "::error::Tag v$version already exists"; exit 1
           fi
