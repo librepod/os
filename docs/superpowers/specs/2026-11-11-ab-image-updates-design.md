@@ -75,6 +75,9 @@ one manual release step. *(Our call; open to a protected CI environment.)* Owner
 
 ### Update flow
 
+Phase 5 changes steps 1 and 6: the device finds the version itself (see
+"Phase 5 design").
+
 1. Marketplace offers the version; the owner consents (`spec.json`, unchanged
    contract: requestId, desiredVersion, apply/now or window).
 2. Updater: `systemd-sysupdate acquire <v>` — download, verify, write into the
@@ -361,7 +364,8 @@ stays open as `faq.4`.
   `https://github.com/librepod/os/releases/latest/download/`. A device only
   sees the newest stable release; older ones stay under their tags, and full
   images make skipping versions free. A prerelease is never Latest, so no
-  device sees it. The consent updater (phase 5) asks for that version.
+  stable device sees it. (Phase 5: beta devices read a rolling `beta`
+  release.)
 - **One release, every profile:** files are named
   `librepod-<profile>_<v>.{efi,store.raw.zst,raw.zst}` (`librepod.image.profile`,
   set by `mkImage` for a profile under `hw/`), one `SHA256SUMS` lists them
@@ -395,6 +399,285 @@ rm -rf "$GNUPGHOME"
 
 Then in Settings → Environments → release-signing, allow only `master` and
 `v*` tags (and, if wanted, required reviewers), and commit `keys/release.pgp`.
+
+## Phase 5 design: the device updates itself (2026-11-13)
+
+Bead: `librepod-os-8ss.5`. Replaces "Update flow" steps 1 and 6 above.
+
+### Why
+
+Until now the Marketplace was to name the version (`spec.json` in ConfigMap
+`librepod-os/<hostname>`, `docs/updates.md`) and the device polled for it. An
+update then needs k3s working, which is exactly when it may be needed most: an
+update that fixes a broken k3s could never arrive. The Marketplace side was
+never built (no code in the marketplace repo reads or writes that ConfigMap),
+so the contract is free to change.
+
+Owner (2026-11-13): reverse the flow. The device learns about updates from
+GitHub Releases and updates without k3s. The Marketplace only shows that an
+update is there and passes on the owner's answer, as on an iPhone: install
+now, tonight, or automatically.
+
+There are two kinds of device, with two update paths:
+
+- **Image devices** (supported hardware, `librepod-install`): this phase.
+- **Library devices** (an owner's own flake on any hardware, `lib.mkDevice`):
+  update by flake pin, nothing on the device (below). The old on-device updater
+  retires.
+
+### Goals
+
+- An image device finds, downloads and installs updates with k3s stopped,
+  broken or absent. Only showing the notice and receiving the owner's answer
+  need k3s, and the Marketplace UI runs in k3s anyway.
+- Onboarding asks for the channel (stable or beta) and automatic updates (on or
+  off). Both can be changed later in the UI, or over ssh with the CLI.
+- A new version shows as a notice with "Install now" and "Tonight". With
+  automatic updates on, every new version installs in the night window.
+- A new version downloads as soon as it is found, so installing is a reboot.
+- A version whose new boot failed is never installed automatically again; the
+  owner may retry it.
+- k3s's changes made by a failed version are undone: its datastore is restored.
+- Stable devices run the exact files beta devices ran (build once, promote).
+
+### Non-goals
+
+- The Marketplace side: the notice, the onboarding questions and the RBAC for
+  the ConfigMap below live in the marketplace repo and code against the
+  contract here.
+- Installing at a time other than now or the night window.
+- Images built from master. Master is for library devices
+  (`github:librepod/os` or the `unstable` tag), as today.
+- Updates or notices for library devices.
+- Delta updates, metered connections, rolling back PV data.
+- Reporting rollbacks to LibrePod: `librepod-os-8ss.15`, with the owner's
+  consent, deferred until there is fleet monitoring (owner, 2026-11-13). This
+  phase keeps the reason on the device, which that bead sends.
+
+### Anti-goals
+
+- The updater depending on k3s or kubectl.
+- A device moving to a lower version on any channel: k3s does not start on a
+  datastore a newer k3s wrote.
+- An install the owner didn't choose: with automatic updates off, nothing
+  installs by itself.
+- Anything a pod writes reaching the host unvalidated: the Marketplace UI faces
+  the internet.
+
+### Channels and versions (release pipeline)
+
+Owner (2026-11-13): build once, promote; rc tags retire.
+
+- **Every tag `vX.Y.Z` is a candidate.** `release-stable.yml` builds and signs
+  it as today and publishes it as a prerelease (never Latest) with all files.
+- **The same publish job copies it into the rolling release `beta`:** the
+  device files only (`*.efi`, `*.store.raw.zst`, `SHA256SUMS`,
+  `SHA256SUMS.gpg`), then deletes the previous candidate's files there. Only
+  when the candidate is higher than what `beta` holds: a hotfix for stable
+  never moves beta back. New files go up first and `SHA256SUMS` and its
+  signature last; a device checking mid-copy fails the signature or a checksum
+  and retries at its next check. `SHA256SUMS` still lists the `.raw.zst` files
+  `beta` doesn't hold; sysupdate fetches only files matching its pattern.
+  About 2 GB per profile per candidate.
+- **Promote** (a new manual workflow, version as input) turns `vX.Y.Z` into a
+  full release marked Latest. No rebuild, same files, same signature. It
+  refuses a version lower than the current Latest.
+- **A failed candidate is never promoted;** its fix is the next patch number.
+  Versions are plain `X.Y.Z`, so sysupdate orders them numerically.
+- **Tags with `-` are refused,** and the cut compares against all `v*` tags.
+  Why: systemd orders `0.5.0-rc.2` above `0.5.0` (`systemd-analyze
+  compare-versions`), so an rc device would never take its stable. `~` sorts
+  lower, but GitHub reportedly renames it to `.` in asset names, and
+  `0.5.0.rc.2` sorts above `0.5.0` too.
+- **Device URLs:** stable `https://github.com/librepod/os/releases/latest/download/`,
+  beta `https://github.com/librepod/os/releases/download/beta/`. Every stable
+  version was a candidate first, so beta never misses one.
+- Latest moves only on promote, so tagging an old-line `0.4.x` no longer moves
+  it by itself.
+- Signing is unchanged (`release-signing`, `keys/release.pgp`). The
+  `unstable` release for library devices is unchanged.
+
+### On the device: the updater (no kubectl)
+
+A module in `imageModules`. Its files live under `/var/lib/librepod/updates/`
+on root, so they survive updates: the settings, the status, the record of the
+install in flight, the failed versions, and the k3s snapshot.
+
+- **Settings:** channel, automatic updates, time zone. Until onboarding sets
+  them: stable, off, UTC.
+- **Check:** at boot and at least every 6 hours, with jitter, through
+  sysupdate against the channel's URL. A version higher than the booted one is
+  `available`.
+- **Download:** as soon as one is available, in both modes: `vacuum`, then
+  `acquire <v>` (the spike: a failed acquire blocks the next one until
+  vacuumed; never vacuum between `acquire` and `update --offline`). A newer
+  version found later replaces it.
+- **When to install:** "now" at once; "tonight" at the next night window;
+  automatic at the first window after the download, unless the version is in
+  the failed list.
+- **What to install:** the newest version on the owner's channel at install
+  time, not the one showing when the owner chose (owner, 2026-11-13). There
+  is one spare slot, so a newer version's download replaces an older one; an
+  install waits for a download in progress ("now" until it finishes,
+  "tonight" while the window lasts, then the next night). The owner's install
+  also retries a version in the failed list; automatic never does.
+- **Night window:** 02:00–05:00 in the owner's time zone. Devices
+  run on UTC (nothing sets a time zone), so onboarding sends the browser's
+  IANA zone, and the updater uses it for the window only.
+- **Install:** record `{from, to, phase: snapshot}`, stop k3s, copy
+  `/var/lib/rancher/k3s/server/db` (SQLite, single server) to the snapshot,
+  `update --offline <v>`, phase `installed`, reboot. If `update --offline`
+  fails: start k3s, clear the record, report `failed`.
+- **Health gate** (`librepod.image.healthCheck`, now set by this module; the
+  `true` shortcut in `lib.releaseFiles` and the image-profiles stub go): k3s
+  and sshd active, the node Ready, all of it stable for 2 minutes, and the
+  channel's `SHA256SUMS` fetched and verified against the image's keyring,
+  which proves the new version can still update itself. All within the gate's
+  15 minutes; otherwise `FailureAction=reboot`, and after its tries the old
+  version boots. These are the old sentinel's checks. Before giving up, the
+  gate writes the check that failed last into the record.
+- **After blessing,** the new version's updater clears the record, deletes the
+  snapshot and reports `done`.
+- **Fallback:** a unit ordered before `k3s.service`, on every boot. With a
+  record whose `from` is the booted version:
+  - phase `installed`: the new version used up its tries. Restore the
+    snapshot, add `to` to the failed list, clear the record, report
+    `rolled-back` with the record's reason in `detail` ("did not finish"
+    when there is none: a panic, hang or power cut).
+  - phase `snapshot`: the install never finished (a power cut). Restore the
+    snapshot (k3s has not run since), clear the record, report `failed`
+    ("interrupted"); not added to the failed list.
+
+  A power cut after `update --offline` and before the reboot still boots the
+  new version next: it is the newest entry with tries left.
+
+### The bridge to the Marketplace (the only kubectl)
+
+A separate unit, after `k3s.service`, every minute. Its failures never touch
+the updater. ConfigMap `marketplace-ui/librepod-os-update` (the namespace of
+the setup-code Secret; the bridge creates both if absent). Each side
+merge-patches only its own keys.
+
+`status.json` (device → UI; the bridge copies the updater's status on change):
+
+```json
+{
+  "current": "0.5.0",
+  "available": "0.5.1",
+  "downloaded": true,
+  "state": "ready",
+  "installAt": "2026-11-14T02:00:00+03:00",
+  "settings": { "channel": "stable", "auto": false, "timezone": "Europe/Minsk" },
+  "handled": { "settings": 3, "install": 7 },
+  "failedVersions": [],
+  "lastCheck": "2026-11-13T12:00:00Z",
+  "detail": "0.5.1 is ready to install"
+}
+```
+
+`state` is one of `up-to-date`, `downloading`, `ready`, `scheduled`,
+`installing`, `done`, `rolled-back`, `failed`; `available` is null when up to
+date; `installAt` is set while `scheduled`.
+
+- A final state (`done`, `rolled-back`, `failed`) stays until the next
+  install starts or a check finds a version not in `failedVersions`; a check
+  that finds nothing new leaves it. *(Our call.)*
+- `failedVersions` is the failed list, so the UI can show an `available`
+  that failed here as "failed, try again" instead of an ordinary notice, and
+  can explain why automatic updates skip it. *(Our call.)*
+
+`settings.json` (UI → device; onboarding, and later changes):
+`{ "rev": 3, "channel": "beta", "auto": true, "timezone": "Europe/Minsk" }`,
+applied once per `rev`.
+
+`install.json` (UI → device; the owner's click):
+`{ "id": 7, "when": "now" }`, `when` being `now` or `tonight`; handled once
+per `id`. It names no version: the device installs the newest at install time
+(above).
+
+- Two keys, so a click right after onboarding can't overwrite the settings.
+- The bridge validates everything (integers, the channel and `when` enums, the
+  zone exists in tzdata) and passes valid requests to the CLI; it
+  changes no files itself. A rejected one is reported in `detail`.
+- A change made with the CLI shows in `status.settings`. A `rev` or `id`
+  already handled is never applied again, so the latest action wins.
+- The node label `librepod.os/version` goes: nothing reads it, and the status
+  carries the version.
+- `docs/updates.md` is rewritten as this contract.
+
+### CLI
+
+`librepod-update status | check | install now|tonight | channel stable|beta |
+auto on|off | timezone <Area/City>`. It works with k3s down, and the bridge
+calls the same commands.
+
+### Library devices (owner, 2026-11-13)
+
+- Update by flake pin: `github:librepod/os/vX.Y.Z` (or master, or the
+  `unstable` tag), then `nix flake update librepod` and `nixos-rebuild switch`.
+  Nothing runs on the device.
+- Keep working: `lib.mkDevice`, `applianceModules`, `nixosModules`, a hardware
+  profile as a module path, and the `mk-device`, `hw-profiles` and
+  `installed-device` checks. `mkDevice` keeps `version` and
+  `/etc/librepod-release`, so existing device flakes still evaluate.
+- Retire: `modules/updates` (its `applianceModules` entry and `mkDevice`'s
+  `librepod.updates.enable` default), `checks/updater-test.nix`,
+  `checks/sentinel-test.nix`, `checks/e2e` (`updates-e2e`, `trial-spike`),
+  `.github/workflows/updates-e2e.yml`, and the README's sections on them.
+
+### Proof
+
+- A stub test in `nix flake check` (like `installer-test`), with sysupdate and
+  systemctl stubbed: validation and once-only handling of `settings.json` and
+  `install.json`, the window in a time zone, the failed-list rule, both
+  fallback phases, never a lower version.
+- A VM test (KVM, local; extends `image-e2e`, which already serves a signed
+  release), a device on 0.5.0 with k3s, and releases served as CI signs them:
+  0.5.1 (good) and 0.5.2 (fails its health gate) on stable; 0.5.3 only on beta.
+  1. With k3s stopped: `check` finds 0.5.1 and downloads it; `install now`
+     boots 0.5.1, k3s Ready, blessed, `done`, snapshot gone.
+  2. Through the ConfigMap: `settings.json` turns automatic updates on, with a
+     zone whose window is now: 0.5.2 installs by itself, fails, and the device
+     is back on 0.5.1, `rolled-back`, with k3s's data as before 0.5.2 (an
+     object made while 0.5.2 ran is gone).
+  3. 0.5.2 is not installed again automatically; `install.json` with `now`
+     retries it.
+  4. Switching to beta offers 0.5.3; stable doesn't.
+  5. A power cut after the snapshot, before `update --offline`: back on 0.5.1,
+     `failed` "interrupted", not in the failed list; the next install works.
+- The first real candidate: `beta` holds only its device files and sums;
+  after promote, `latest/download/SHA256SUMS` serves it; a real device on
+  each channel lists it through GitHub's redirects (systemd-pull following
+  them is unverified so far).
+
+### Our calls (for review)
+
+- The night window is 02:00–05:00 local time, fixed.
+- Downloads are automatic in both modes: about 2 GB per release.
+- Before onboarding: stable, automatic updates off, UTC.
+- The ConfigMap lives in `marketplace-ui`, with three keys.
+- The health gate includes fetching the channel's signed `SHA256SUMS`.
+- The bridge polls every minute; the updater checks every 6 hours.
+
+### Left to the builder
+
+Module and file names; how sysupdate gets each channel's definitions (two
+directories, or `--definitions`); timers within the limits above; the format
+of the record in flight; how the VM test changes k3s's data on 0.5.2; the
+promote workflow's shape; README, AGENTS.md and CLAUDE.md.
+
+### Risks
+
+- GitHub refuses files of 2 GiB or more; rc.2's disk image is 1.95 GB and its
+  store slot 1.90 GB. In this phase the release workflow only refuses to
+  publish when a file is that big, checked before any upload; shrinking the
+  image stays with `faq.2` (firmware) and `faq.17` (smaller store).
+  *(Our call.)*
+- The health gate needs k3s: a device whose k3s is broken for reasons no OS
+  version fixes (its data, say) rolls back every update.
+- borgmatic's nightly run (03:15) falls inside the night window; an install
+  mid-backup can leave workloads scaled to 0 and Flux suspended. Not on image
+  devices yet; designed later in `librepod-os-8ss.16`.
 
 ## Open questions
 
