@@ -100,10 +100,11 @@ download() {
 }
 
 snapshot_k3s_db() { # k3s is stopped
-  rm -rf "$SNAPSHOT.partial"
+  # An older one goes first: cut mid-copy, fallback must find no snapshot (the data is untouched), not a stale one.
+  rm -rf "$SNAPSHOT" "$SNAPSHOT.partial"; sync "$STATE_DIR"
   if [ -d "$K3S_DB" ]; then cp -a "$K3S_DB" "$SNAPSHOT.partial"; else mkdir "$SNAPSHOT.partial"; fi
   sync -f "$SNAPSHOT.partial"
-  rm -rf "$SNAPSHOT"; mv "$SNAPSHOT.partial" "$SNAPSHOT"; sync "$STATE_DIR"
+  mv "$SNAPSHOT.partial" "$SNAPSHOT"; sync "$STATE_DIR"
 }
 
 write_record() { write_state "$RECORD" "$(jq -nc --arg f "$1" --arg t "$2" --arg p "$3" '{from: $f, to: $t, phase: $p}')"; } # from, to, phase

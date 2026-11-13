@@ -62,6 +62,9 @@ pkgs.runCommand "image-updater-test"
     # An exported function beats the updater's own PATH (its runtimeInputs go first).
     sync() { [ ! -e "$STUBS/sync-fails" ] || [ "$*" != "$LIBREPOD_UPDATES_DIR" ] || return 1; command sync "$@"; }
     export -f sync
+    # A cut during the snapshot's copy: part of the data is written, then the updater dies without its trap.
+    cp() { [ ! -e "$STUBS/cut-in-cp" ] || { mkdir -p "''${!#}"; echo junk > "''${!#}/state.db"; kill -9 $$; }; command cp "$@"; }
+    export -f cp
     expect() { "$@" || { echo "FAIL: $*"; echo "--- calls"; cat $CALLS_LOG; echo "--- status"; cat $D/status.json 2>/dev/null; exit 1; }; }
 
     # ---- settings, status and the CLI shell -------------------------------
@@ -197,6 +200,10 @@ pkgs.runCommand "image-updater-test"
     # an unreachable source downloads nothing: a stale available belongs to the old channel
     fresh; offer stable 0.5.1; $U tick; $U channel beta; touch $STUBS/list-fails; : > $CALLS_LOG; $U tick
     expect not called acquire; expect [ "$(st .state)" != downloading ]
+    # a snapshot left from before is not the one to restore after a later install is cut mid-copy
+    fresh; at UTC "2026-11-14 12:00"; offer stable 0.5.1; $U tick; snap stale; touch $STUBS/cut-in-cp
+    $U install now; expect not $U tick 2>/dev/null; rm $STUBS/cut-in-cp
+    expect [ -e $D/record.json ]; $U fallback; expect [ "$(cat $T/db/state.db)" = before ]
     # status rewrites take turns: the CLI waits for one in progress
     fresh; rm -f $T/held $T/released
     ( exec 8> $D/.status.lock; flock 8; : > $T/held; sleep 1; : > $T/released ) &
