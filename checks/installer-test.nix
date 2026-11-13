@@ -5,6 +5,7 @@ pkgs.runCommand "installer-test"
     buildInputs = with pkgs; [
       bash
       zstd
+      openssh
     ];
   }
   ''
@@ -51,6 +52,23 @@ pkgs.runCommand "installer-test"
       refused "invalid setup code" --image "$ROOT/ok.img" --name pod-test --setup-code "$code"
     done
     refused usage: --image "$ROOT/ok.img" --name pod-test --setup-code ""
+
+    # --ssh-key: a bad file on a key-only device means no SSH at all.
+    ssh-keygen -q -t ed25519 -N "" -C one -f "$ROOT/id"
+    ssh-keygen -q -t ed25519 -N "" -C two -f "$ROOT/id2"
+    { cat "$ROOT/id.pub"; echo "# the bench"; echo; printf 'from="10.0.0.0/8" '; cat "$ROOT/id2.pub"; } > "$ROOT/keys.pub"
+    { cat "$ROOT/id.pub"; echo "ssh-ed25519 AAAAtrunc"; } > "$ROOT/half.pub"
+    printf '# no keys yet\n\n' > "$ROOT/empty.pub"
+    ok=(--image "$ROOT/ok.img" --name pod-test)
+    refused usage: "''${ok[@]}" --ssh-key
+    refused usage: "''${ok[@]}" --ssh-key ""
+    refused "--ssh-key $ROOT/missing.pub: no such file" "''${ok[@]}" --ssh-key "$ROOT/missing.pub"
+    refused "line 1 is not a public key" "''${ok[@]}" --ssh-key "$ROOT/id" # the private key
+    refused "line 1 is not a public key" "''${ok[@]}" --ssh-key "$ROOT/ok.img"
+    refused "line 2 is not a public key" "''${ok[@]}" --ssh-key "$ROOT/half.pub"
+    refused "no public key in it" "''${ok[@]}" --ssh-key "$ROOT/empty.pub"
+    # a good file passes its check: the next one refuses
+    refused "not a block device" "''${ok[@]}" --ssh-key "$ROOT/keys.pub" --disk "$ROOT/ok.img"
 
     echo "installer scenarios passed"
     touch $out
