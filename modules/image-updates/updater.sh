@@ -99,12 +99,21 @@ download() {
   fi
 }
 
+# In two steps, so a cut never leaves a half-deleted snapshot for fallback to
+# restore: a .partial is never restored.
+drop_snapshot() {
+  if [ -e "$SNAPSHOT" ]; then
+    rm -rf "$SNAPSHOT.partial"; mv -T "$SNAPSHOT" "$SNAPSHOT.partial"; sync "$STATE_DIR"
+  fi
+  rm -rf "$SNAPSHOT.partial"
+}
+
 snapshot_k3s_db() { # k3s is stopped
   # An older one goes first: cut mid-copy, fallback must find no snapshot (the data is untouched), not a stale one.
-  rm -rf "$SNAPSHOT" "$SNAPSHOT.partial"; sync "$STATE_DIR"
+  drop_snapshot
   if [ -d "$K3S_DB" ]; then cp -a "$K3S_DB" "$SNAPSHOT.partial"; else mkdir "$SNAPSHOT.partial"; fi
   sync -f "$SNAPSHOT.partial"
-  mv "$SNAPSHOT.partial" "$SNAPSHOT"; sync "$STATE_DIR"
+  mv -T "$SNAPSHOT.partial" "$SNAPSHOT"; sync "$STATE_DIR" # -T: never into a directory that is already there
 }
 
 write_record() { write_state "$RECORD" "$(jq -nc --arg f "$1" --arg t "$2" --arg p "$3" '{from: $f, to: $t, phase: $p}')"; } # from, to, phase
@@ -116,7 +125,7 @@ write_record() { write_state "$RECORD" "$(jq -nc --arg f "$1" --arg t "$2" --arg
 abort_install() {
   (
     set +e
-    rm -rf "$RECORD" "$SNAPSHOT" "$SNAPSHOT.partial"
+    rm -rf "$RECORD"; drop_snapshot
     fail_version "$INSTALL_TO" # automatic updates skip it; the owner's request still retries
     sync "$STATE_DIR" # the record is gone for good before k3s writes again, or a cut would restore a stale snapshot
     systemctl start k3s.service
@@ -129,6 +138,7 @@ abort_install() {
 install_version() { # version
   INSTALL_TO=$1; INSTALL_FROM=$(booted_version)
   trap abort_install EXIT # before the record: a failing sync inside its write would leave it behind
+  drop_snapshot # before the record too: with a record, an older snapshot is one fallback would restore
   write_record "$INSTALL_FROM" "$1" snapshot
   set_status installing "installing $1"
   systemctl stop k3s.service
@@ -222,7 +232,7 @@ fallback() {
   fi
   phase=$(record_field phase); reason=$(record_field reason)
   # Gone as soon as the data is back: restored again after k3s ran, it would undo k3s's writes.
-  rm -rf "$SNAPSHOT" "$SNAPSHOT.partial"; sync "$STATE_DIR"
+  drop_snapshot
   if [ "$phase" = installed ] || [ -n "$reason" ] || sysupdate pending >/dev/null 2>&1; then
     fail_version "$to"
     sysupdate vacuum --instances-max=1 || true # so that a retry downloads it again
@@ -242,7 +252,7 @@ finish() {
   local to; to=$(record_field to)
   if [ -z "$to" ] || [ "$to" != "$(booted_version)" ] || ! blessed; then return 0; fi
   if in_failed "$to"; then write_state "$FAILED" "$(grep -vxF "$to" "$FAILED" || true)"; fi
-  rm -rf "$SNAPSHOT" "$DOWNLOADED"
+  drop_snapshot; rm -f "$DOWNLOADED"
   set_status "done" "updated to $to" # quoted: shellcheck reads a bare done as the keyword
   rm -f "$RECORD"; sync "$STATE_DIR"
 }

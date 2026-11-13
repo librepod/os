@@ -36,7 +36,8 @@ pkgs.runCommand "image-updater-test"
     U=${updater}/bin/librepod-update
     mkdir -p $STUBS/bin
     stub() { printf '#!/bin/sh\necho "%s $*" >> "$CALLS_LOG"\n%s\n' "$1" "$2" > $STUBS/bin/$1; chmod +x $STUBS/bin/$1; }
-    stub systemctl 'case "$*" in "start k3s"*) r=no; [ ! -e "$LIBREPOD_UPDATES_DIR/record.json" ] || r=yes; echo "record=$r" >> "$CALLS_LOG";; esac'
+    stub systemctl 'case "$*" in "start k3s"*) r=no; [ ! -e "$LIBREPOD_UPDATES_DIR/record.json" ] || r=yes; echo "record=$r" >> "$CALLS_LOG";;
+      "stop k3s"*) [ ! -e "$STUBS/cut-on-stop" ] || kill -9 $PPID;; esac'
     stub systemd-bless-boot 'cat "$STUBS/bless-status"; [ ! -e "$STUBS/bless-fails" ]'
     stub systemd-sysupdate '
     ch=; for a; do case $a in --definitions=*) ch=''${a##*/};; esac; done
@@ -65,6 +66,9 @@ pkgs.runCommand "image-updater-test"
     # A cut during the snapshot's copy: part of the data is written, then the updater dies without its trap.
     cp() { [ ! -e "$STUBS/cut-in-cp" ] || { mkdir -p "''${!#}"; echo junk > "''${!#}/state.db"; kill -9 $$; }; command cp "$@"; }
     export -f cp
+    # A cut while a snapshot is deleted: its state.db goes, then the updater dies.
+    rm() { if [ -e "$STUBS/cut-in-rm" ]; then for a; do case $a in */k3s-db | */k3s-db.partial) [ ! -e "$a" ] || { command rm -f "$a/state.db"; kill -9 $$; };; esac; done; fi; command rm "$@"; }
+    export -f rm
     expect() { "$@" || { echo "FAIL: $*"; echo "--- calls"; cat $CALLS_LOG; echo "--- status"; cat $D/status.json 2>/dev/null; exit 1; }; }
 
     # ---- settings, status and the CLI shell -------------------------------
@@ -204,6 +208,17 @@ pkgs.runCommand "image-updater-test"
     fresh; at UTC "2026-11-14 12:00"; offer stable 0.5.1; $U tick; snap stale; touch $STUBS/cut-in-cp
     $U install now; expect not $U tick 2>/dev/null; rm $STUBS/cut-in-cp
     expect [ -e $D/record.json ]; $U fallback; expect [ "$(cat $T/db/state.db)" = before ]
+    # a cut right after the record is written, with an older snapshot around: not the one to restore
+    fresh; at UTC "2026-11-14 12:00"; offer stable 0.5.1; $U tick; snap stale; touch $STUBS/cut-on-stop
+    $U install now; expect not $U tick 2>/dev/null; rm $STUBS/cut-on-stop
+    expect [ -e $D/record.json ]; $U fallback; expect [ "$(cat $T/db/state.db)" = before ]
+    # a cut while the snapshot is dropped after a restore: what is left is never restored over the data
+    fresh; rec '{"from":"0.5.0","to":"0.5.1","phase":"installed"}'; snap before; echo after > $T/db/state.db; touch $STUBS/cut-in-rm
+    expect not $U fallback 2>/dev/null; rm $STUBS/cut-in-rm
+    expect [ -e $D/record.json ]; $U fallback; expect [ "$(cat $T/db/state.db)" = before ]
+    # a .partial left by an interrupted drop is never restored
+    fresh; rec '{"from":"0.5.0","to":"0.5.1","phase":"installed"}'; mkdir $D/k3s-db.partial; echo junk > $D/k3s-db.partial/state.db
+    echo after > $T/db/state.db; $U fallback; expect [ "$(cat $T/db/state.db)" = after ]; expect [ ! -e $D/k3s-db.partial ]
     # status rewrites take turns: the CLI waits for one in progress
     fresh; rm -f $T/held $T/released
     ( exec 8> $D/.status.lock; flock 8; : > $T/held; sleep 1; : > $T/released ) &
