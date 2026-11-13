@@ -75,6 +75,7 @@ check() {
   fi
   # shellcheck disable=SC2016 # jq variables
   refresh_status '.available = (if $v == "" then null else $v end) | .lastCheck = $t' --arg v "$new" --arg t "$(iso_now)"
+  mkdir -p "$RUN_DIR" # not RuntimeDirectory=: systemd removes that when the oneshot stops
   touch "$RUN_DIR/checked"
 }
 
@@ -100,7 +101,7 @@ snapshot_k3s_db() { # k3s is stopped
 }
 
 # Leaves the record when it has asked for the reboot; on failure k3s runs again
-# and nothing is left behind.
+# and only FAILED is left behind.
 install_version() { # version
   local from; from=$(booted_version)
   write_state "$RECORD" "$(jq -nc --arg f "$from" --arg t "$1" '{from: $f, to: $t, phase: "snapshot"}')"
@@ -114,7 +115,10 @@ install_version() { # version
   fi
   if ! sysupdate update --offline "$1"; then
     # The record goes (durably) before k3s writes again, or a cut would restore a stale snapshot.
-    rm -rf "$RECORD" "$SNAPSHOT"; sync "$STATE_DIR"
+    # FAILED keeps automatic updates from retrying it every tick; the owner's request still can.
+    rm -rf "$RECORD" "$SNAPSHOT"
+    in_failed "$1" || echo "$1" >> "$FAILED"
+    sync "$FAILED" "$STATE_DIR"
     systemctl start k3s.service
     set_status failed "could not install $1; still on $from"
     return

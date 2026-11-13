@@ -112,6 +112,7 @@ pkgs.runCommand "image-updater-test"
     fresh; offer stable 0.5.1; expect $U tick
     expect called "--definitions=/defs/stable check-new"; expect called "acquire 0.5.1"
     expect [ "$(st .available)/$(st .downloaded)/$(st .state)" = 0.5.1/true/ready ]; expect not called "update --offline"
+    rm -rf $T/run; expect $U tick; expect [ -e $T/run/checked ]          # the tick makes its own run dir
     # never a lower version
     fresh; offer stable 0.4.9; expect $U tick; expect [ "$(st .available)" = null ]; expect not called acquire
     # once per boot, then every 6 h
@@ -134,6 +135,8 @@ pkgs.runCommand "image-updater-test"
     # update --offline fails: record gone before k3s starts again
     fresh; offer stable 0.5.1; touch $STUBS/update-fails; $U install now; $U tick
     expect [ ! -e $D/record.json ]; expect [ ! -e $D/k3s-db ]; expect called "start k3s"; expect [ "$(st .state)" = failed ]
+    expect grep -qx 0.5.1 $D/failed-versions
+    $U install now; $U tick; expect [ "$(grep -cx 0.5.1 $D/failed-versions)" = 1 ]   # the owner retries it; no second line
     # automatic only in the window, 05:00 excluded
     fresh; offer stable 0.5.1; $U timezone Europe/Minsk; $U auto on; at Europe/Minsk "2026-11-14 12:00"; $U tick
     expect [ "$(st .state)/$(st .installAt)" = "scheduled/2026-11-15T02:00:00+03:00" ]; expect not called "update --offline"
