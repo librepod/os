@@ -8,17 +8,20 @@ set -euo pipefail
 usage() {
   echo "usage: librepod-install --image FILE --name NAME [--disk /dev/nvme0n1]"
   echo "                        [--data-disk /dev/sda] [--keep-data | --wipe-data]"
+  echo "                        [--setup-code XXXX-XXXX-XXXX]  (keep a printed sticker's)"
   exit 1
 }
 die() { echo "$*" >&2; exit 1; }
 
-IMAGE="" NAME="" DISK="/dev/nvme0n1" DATA_DISK="/dev/sda" DATA=""
+IMAGE="" NAME="" DISK="/dev/nvme0n1" DATA_DISK="/dev/sda" DATA="" SETUP_CODE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --image) [ $# -ge 2 ] || usage; IMAGE="$2"; shift 2;;
     --name) [ $# -ge 2 ] || usage; NAME="$2"; shift 2;;
     --disk) [ $# -ge 2 ] || usage; DISK="$2"; shift 2;;
     --data-disk) [ $# -ge 2 ] || usage; DATA_DISK="$2"; shift 2;;
+    # Empty would mean "mint one": an unset variable must not orphan a sticker.
+    --setup-code) [ $# -ge 2 ] && [ -n "$2" ] || usage; SETUP_CODE="$2"; shift 2;;
     --keep-data|--wipe-data) [ -z "$DATA" ] || die "pass --keep-data or --wipe-data, not both"; DATA="${1#--}"; shift;;
     *) usage;;
   esac
@@ -28,6 +31,16 @@ done
 # Every check before the first write.
 # Hostname and k8s node name.
 [[ "$NAME" =~ ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || die "invalid name: $NAME (a-z, 0-9, -)"
+# The claim code for marketplace-ui's setup wizard (the sticker's): kept from
+# --setup-code or minted here. Alphabet and length as in its setup-code.ts.
+ALPHABET=ABCDEFGHJKMNPQRSTUVWXYZ23456789
+if [ -z "$SETUP_CODE" ]; then
+  # No reader closing early: `tr </dev/urandom | head` dies of SIGPIPE under pipefail.
+  SETUP_CODE="$(head -c 4096 /dev/urandom | LC_ALL=C tr -dc "$ALPHABET")"
+  SETUP_CODE="${SETUP_CODE:0:12}"
+fi
+SETUP_CODE="${SETUP_CODE^^}" SETUP_CODE="${SETUP_CODE//[- ]/}"
+[[ "$SETUP_CODE" =~ ^[$ALPHABET]{12}$ ]] || die "invalid setup code: 12 of $ALPHABET, dashes optional"
 [ -f "$IMAGE" ] || die "$IMAGE: no such file"
 # A whole disk image has a GPT header in its second sector and its last one:
 # a store slot or a truncated download doesn't. zstd -f passes .raw through.
@@ -93,15 +106,18 @@ else
   sgdisk -c1:librepod-data "$DATA_DISK" >/dev/null
 fi
 
-echo "==> writing $NAME and its data disk to root"
+echo "==> writing $NAME, its data disk and setup code to root"
 MNT=$(mktemp -d)
 mount "$ROOT" "$MNT"
 mkdir -p "$MNT/etc/librepod"
 echo "$NAME" > "$MNT/etc/hostname"
 echo "$DATA_UUID" > "$MNT/etc/librepod/data-partuuid"
+install -d -m 700 "$MNT/var/lib/librepod"
+(umask 077 && echo "$SETUP_CODE" > "$MNT/var/lib/librepod/setup-code")
 umount "$MNT"
 
 echo "==> boot entry LibrePod, first in BootOrder"
 efibootmgr -q --create --disk "$DISK" --part "$ESP_N" --label LibrePod --loader '\EFI\BOOT\BOOTX64.EFI'
 
 echo "==> installed $NAME: os $DISK, data $DATA_DISK. Reboot when ready."
+echo "==> then open http://$NAME.local, setup code ${SETUP_CODE:0:4}-${SETUP_CODE:4:4}-${SETUP_CODE:8:4}"

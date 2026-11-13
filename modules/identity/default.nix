@@ -9,6 +9,8 @@
 #   (installer, phase 3)
 # - data disk: one GPT partition labelled librepod-data, ext4, found by that
 #   UUID: PVs at /mnt/k3s
+# - /var/lib/librepod/setup-code: the sticker's claim code, root-only
+#   (installer; modules/onboarding hands it to marketplace-ui)
 # The generic password is console-only: sshd wants a key and a password, and
 # no key ships.
 { pkgs, lib, ... }:

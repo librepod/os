@@ -279,13 +279,15 @@ hostPkgs.testers.runNixOSTest {
           installer.fail("efibootmgr | grep LibrePod")
 
       with subtest("install; the data disk is ours"):
-          installer.succeed(inst.format(disk=os_, data=data, flags=""))  # recycled disk: no flag needed
+          out = installer.succeed(inst.format(disk=os_, data=data, flags=""))  # recycled disk: no flag needed
+          code = out.strip().splitlines()[-1].split()[-1]  # "... setup code XXXX-XXXX-XXXX", the sticker's
           installer.succeed(f"mkdir -p /mnt && mount {data}p1 /mnt && touch /mnt/marker && umount /mnt")
 
       with subtest("existing data: refused without a flag, kept with --keep-data"):
           out = installer.fail(inst.format(disk=os_, data=data, flags="") + " 2>&1")
           assert "--keep-data" in out and "--wipe-data" in out, out
-          installer.succeed(inst.format(disk=os_, data=data, flags="--keep-data"))
+          # a reinstall keeps the sticker's code, typed as printed or not
+          installer.succeed(inst.format(disk=os_, data=data, flags=f"--keep-data --setup-code {code.lower()}"))
       installer.shutdown()
 
       os.environ["NIX_DISK_IMAGE"] = os.environ["OS_DISK"]
@@ -373,6 +375,16 @@ hostPkgs.testers.runNixOSTest {
               timeout=600,
           )
           assert pod.succeed("k3s kubectl get nodes -o name").split() == ["node/pod-image"]
+
+      with subtest("the sticker's setup code reaches marketplace-ui"):
+          assert pod.succeed("stat -c %a /var/lib/librepod/setup-code").strip() == "600"
+          pod.wait_until_succeeds("k3s kubectl -n marketplace-ui get secret librepod-setup-code", timeout=300)
+          got = pod.succeed("k3s kubectl -n marketplace-ui get secret librepod-setup-code"
+                            " -o jsonpath='{.data.code}' | base64 -d").strip()
+          assert got == code.replace("-", ""), (got, code)
+          # and for a device without its sticker, the journal shows it with its link and a QR code
+          journal = pod.succeed("journalctl -u librepod-setup-code -o cat")
+          assert f"http://pod-image.local/#code={code}" in journal and "█" in journal, journal
 
       with subtest("a changed password, the host key and machine-id survive a reboot"):
           pod.succeed("echo librepod:new-pw | chpasswd")  # what onboarding will do

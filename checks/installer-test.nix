@@ -47,6 +47,10 @@ pkgs.runCommand "installer-test"
     refused "not a whole disk image" --image "$ROOT/slot.img" --name pod-test
     refused "not both" --image "$ROOT/ok.img" --name pod-test --keep-data --wipe-data
     refused "not a block device" --image "$ROOT/ok.img" --name pod-test --disk "$ROOT/ok.img"
+    for code in 7KQM-X3RT-9VH0 7KQMX3RT9VH 7KQMX3RT9VHCC; do
+      refused "invalid setup code" --image "$ROOT/ok.img" --name pod-test --setup-code "$code"
+    done
+    refused usage: --image "$ROOT/ok.img" --name pod-test --setup-code ""
 
     echo "installer scenarios passed"
     touch $out
