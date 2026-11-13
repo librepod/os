@@ -71,7 +71,7 @@ lists all offered versions. The device trusts only
 the vendor keyring is not consulted.
 
 Key custody: the signing key lives off GitHub (hardware token); signing is the
-one manual release step. *(Our call; open to a protected CI environment.)*
+one manual release step. *(Our call; open to a protected CI environment.)* Owner chose the CI environment in phase 4.
 
 ### Update flow
 
@@ -351,9 +351,55 @@ AGENTS.md, the `modules/identity` header).
   efivars). Adding the first SSH key means typing it at the console; on the
   bench `nc -l` worked only because the image's firewall is off.
 
+## Phase 4: release pipeline (2026-11-13)
+
+Owner's calls: host on **GitHub Releases**, sign in a **protected CI
+environment** (not the hardware token above). Owning the update URL's domain
+stays open as `faq.4`.
+
+- **Where devices look:** `updateUrl` defaults to
+  `https://github.com/librepod/os/releases/latest/download/`. A device only
+  sees the newest stable release; older ones stay under their tags, and full
+  images make skipping versions free. A prerelease is never Latest, so no
+  device sees it. The consent updater (phase 5) asks for that version.
+- **One release, every profile:** files are named
+  `librepod-<profile>_<v>.{efi,store.raw.zst,raw.zst}` (`librepod.image.profile`,
+  set by `mkImage` for a profile under `hw/`), one `SHA256SUMS` lists them
+  all, and a device's source pattern matches only its profile. The `.raw.zst`
+  is the whole disk for `librepod-install`; devices never download it.
+- **Build:** `lib.releaseFiles { device, version }` builds a profile's files
+  (`system.build.releaseFiles`); `release-stable.yml` builds one per `hw/`
+  profile on a tag, then signs and publishes. The release is created only
+  after every image is built and `SHA256SUMS` is signed, so Latest never
+  points at a half-made release. Until phase 5, release images bless every
+  boot (`healthCheck = true`): only an update's new image runs it.
+- **Signing:** the `release-signing` environment holds `RELEASE_SIGNING_KEY`
+  (an unprotected ed25519 key). `keys/release.pgp` holds its public half
+  (and later the offline backup key, `faq.3`); images trust only that file,
+  and the publish job checks the signature against it before uploading. No
+  `keys/release.pgp`, no release build.
+- **Proof:** `image-e2e` serves the pod's own release, signed as CI signs
+  it; the pod lists its version as available through sysupdate, and the
+  installer writes that release's `.raw.zst`.
+
+One-time setup (owner, a machine with `gh` logged in):
+
+```sh
+export GNUPGHOME="$(mktemp -d)"
+gpg --batch --passphrase "" --quick-gen-key "LibrePod release <release@librepod.dev>" ed25519 sign never
+gpg --export > keys/release.pgp
+gh api -X PUT repos/librepod/os/environments/release-signing
+gpg --export-secret-keys --armor | gh secret set RELEASE_SIGNING_KEY --env release-signing --repo librepod/os
+rm -rf "$GNUPGHOME"
+```
+
+Then in Settings → Environments → release-signing, allow only `master` and
+`v*` tags (and, if wanted, required reviewers), and commit `keys/release.pgp`.
+
 ## Open questions
 
 - Tries count (spike: 2). Each failed try costs up to the health budget.
-- Hosting: GitHub Pages / bucket vs Releases redirects.
+- Hosting: settled as GitHub Releases (phase 4); a domain LibrePod owns in
+  front of it is `faq.4`.
 - A hang *after* blessing reboots into the same version forever; only a newer
   release fixes it. A stability window before blessing narrows it.

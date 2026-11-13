@@ -180,7 +180,7 @@
         # per-device is in it (see modules/identity).
         #   version — becomes system.image.version, the sysupdate version
         #   device  — as for mkDevice
-        #   modules — extra modules (until phase 4/5: librepod.image settings)
+        #   modules — extra modules (until phase 5: librepod.image.healthCheck)
         mkImage =
           {
             device,
@@ -194,9 +194,28 @@
               ++ [
                 (hwModule device)
                 { system.image.version = version; }
+                # A release names each supported profile's files after it.
+                { librepod.image.profile = nixpkgs.lib.mkIf (builtins.isString device) device; }
               ]
               ++ modules;
           };
+
+        # One profile's files as a release publishes them (release-stable.yml).
+        releaseFiles =
+          { device, version }:
+          (self.lib.mkImage {
+            inherit device version;
+            modules = [
+              (
+                { pkgs, ... }:
+                {
+                  # shortcut: blesses every boot; only an update's new image runs
+                  # it, and nothing updates before 8ss.5 brings the real check.
+                  librepod.image.healthCheck = "${pkgs.coreutils}/bin/true";
+                }
+              )
+            ];
+          }).config.system.build.releaseFiles;
       };
 
       packages.x86_64-linux.librepod-install =

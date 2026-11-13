@@ -29,6 +29,9 @@ let
     SizeMaxBytes = "128M";
     SplitName = "-";
   };
+  # This profile's files in a release: <releaseId>_<version>.<suffix>.
+  releaseId = id + lib.optionalString (cfg.profile != null) "-${cfg.profile}";
+  releaseName = "${releaseId}_${version}";
   # udev marks the disk systemd-boot started from (initrd) and the disk holding
   # / (after the switch): a copy of this image on another drive is never mounted.
   bootDiskRules = ''
@@ -45,11 +48,19 @@ in
   options.librepod.image = {
     updateUrl = lib.mkOption {
       type = lib.types.str;
+      # Only the newest stable release is offered; older ones stay under their tags.
+      default = "https://github.com/librepod/os/releases/latest/download/";
       description = "Folder holding SHA256SUMS, SHA256SUMS.gpg and the release files.";
     };
     pubring = lib.mkOption {
       type = lib.types.path;
+      default = ../../keys/release.pgp;
       description = "The only keys a release may be signed with.";
+    };
+    profile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Hardware profile: a release holds every profile's files, named librepod-<profile>_<version>.";
     };
     slotSize = lib.mkOption {
       type = lib.types.str;
@@ -151,7 +162,7 @@ in
             Source = {
               Type = "url-file";
               Path = cfg.updateUrl;
-              MatchPattern = "${id}_@v.${suffix}";
+              MatchPattern = "${releaseId}_@v.${suffix}";
             };
           };
         in
@@ -186,6 +197,17 @@ in
           };
         };
     };
+    # What a release publishes for this profile: the UKI and store slot devices
+    # update from, and the whole disk librepod-install writes.
+    system.build.releaseFiles =
+      pkgs.runCommand "${releaseName}-release" { nativeBuildInputs = [ pkgs.zstd ]; }
+        ''
+          mkdir $out
+          cp ${config.system.build.uki}/${config.system.boot.loader.ukiFile} $out/${releaseName}.efi
+          zstd -q -T0 ${config.system.build.image}/${config.image.baseName}.store.raw -o $out/${releaseName}.store.raw.zst
+          zstd -q -T0 ${config.system.build.image}/${config.image.filePath} -o $out/${releaseName}.raw.zst
+        '';
+
     # Only the consent updater starts an update, never a timer.
     systemd.timers.systemd-sysupdate.wantedBy = lib.mkForce [ ];
     # When this exists, systemd-pull ignores the vendor keyring.

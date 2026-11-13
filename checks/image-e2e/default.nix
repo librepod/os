@@ -8,6 +8,8 @@
 # drives, another LibrePod's data disk and a copy of the image among them,
 # change nothing: the OS disk is the one booted from, the data disk the one
 # recorded on root. Without its data disk the device still boots, NFS off.
+# It reads a signed release, as CI publishes one, and finds its own profile's
+# version there; the installer writes that release's disk image.
 # Run locally (KVM): nix build .#image-e2e -L
 { self, nixpkgs }:
 let
@@ -41,6 +43,27 @@ let
         unshare --map-root-user fakeroot systemd-repart --dry-run=no --empty=create --size=auto \
           --architecture=x86-64 --seed=${seed} --definitions=${defs} $out
       '';
+  # A release folder as release-stable.yml publishes it, signed with a test key.
+  releaseKey =
+    hostPkgs.runCommand "image-e2e-release-key" { nativeBuildInputs = [ hostPkgs.gnupg ]; }
+      ''
+        mkdir -p $out/home
+        export GNUPGHOME=$out/home
+        gpg --batch --passphrase "" --quick-gen-key "LibrePod image-e2e <e2e@librepod.invalid>" ed25519 sign never
+        gpg --export > $out/release.pgp
+        rm -f $out/home/S.*
+      '';
+  release =
+    pod:
+    hostPkgs.runCommand "image-e2e-release" { nativeBuildInputs = [ hostPkgs.gnupg ]; } ''
+      mkdir $out && cd $out
+      cp ${pod.system.build.releaseFiles}/* .
+      sha256sum -- * > SHA256SUMS
+      export GNUPGHOME=$(mktemp -d)
+      cp -r ${releaseKey}/home/. $GNUPGHOME && chmod -R u+w $GNUPGHOME
+      gpg --batch --detach-sign --output SHA256SUMS.gpg SHA256SUMS
+      gpgv --keyring ${releaseKey}/release.pgp SHA256SUMS.gpg SHA256SUMS
+    '';
   # Another LibrePod's data disk, plugged in next to ours.
   otherDataDisk = gptDisk "otherdata" "9a4f1c2e-6b7d-4e8f-a1b2-c3d4e5f60718" [
     {
@@ -96,14 +119,25 @@ hostPkgs.testers.runNixOSTest {
       ];
     };
 
+  nodes.server =
+    { nodes, ... }:
+    {
+      networking.firewall.enable = false;
+      services.nginx = {
+        enable = true;
+        virtualHosts.server.root = release nodes.pod;
+      };
+    };
+
   nodes.pod =
     { pkgs, ... }:
     {
       imports = self.lib.imageModules;
       system.image.version = "1";
       librepod.image = {
-        updateUrl = "https://updates.invalid/";
-        pubring = pkgs.writeText "empty.pgp" "";
+        updateUrl = "http://server/";
+        pubring = "${releaseKey}/release.pgp";
+        profile = "vm";
         healthCheck = "${pkgs.coreutils}/bin/true";
       };
 
@@ -173,12 +207,9 @@ hostPkgs.testers.runNixOSTest {
     { nodes, ... }:
     let
       m = nodes.pod;
-      imageZst = hostPkgs.runCommand "image-e2e.raw.zst" {
-        nativeBuildInputs = [ hostPkgs.zstd ];
-      } "zstd -T0 -q ${m.system.build.image}/${m.image.filePath} -o $out";
     in
     ''
-      import os, subprocess, tempfile, time
+      import json, os, subprocess, tempfile, time
 
       def boots():
           return pod.get_console_log().count("Linux version")
@@ -228,12 +259,13 @@ hostPkgs.testers.runNixOSTest {
       os.environ["DATA_DISK"] = disk("${foreignDisk}", "2G")  # a recycled disk
       os.environ["USB_DISK"] = disk()
       installer.start()
+      server.start()  # before NIX_DISK_IMAGE points at the OS disk, below
       installer.wait_for_unit("multi-user.target")
 
       def dev(serial):  # kernel path of the disk with this serial
           return installer.succeed(f"lsblk -dnpo PATH,SERIAL | awk '$2==\"{serial}\" {{print $1}}'").strip()
       os_, data = dev("os"), dev("data")
-      inst = "librepod-install --image ${imageZst} --name pod-image --disk {disk} --data-disk {data} {flags}"
+      inst = "librepod-install --image ${release m}/librepod-vm_1.raw.zst --name pod-image --disk {disk} --data-disk {data} {flags}"
 
       with subtest("refusals: USB, mounted, a partition, held by device-mapper"):
           installer.fail(inst.format(disk=os_, data=dev("usb"), flags=""))
@@ -326,6 +358,12 @@ hostPkgs.testers.runNixOSTest {
           # <name>.local is how owners find the device; a second stack makes it unreliable
           responders = pod.succeed("ss -Hulpn 'sport = :5353'")
           assert "systemd-resolve" not in responders, responders
+
+      with subtest("the published release: signed, this profile's files, this version"):
+          server.wait_for_unit("nginx.service")
+          out = pod.succeed("systemd-sysupdate --json=short list 1")
+          v = json.loads(out)
+          assert v["installed"] and v["available"], v
 
       with subtest("the k3s node is named after the device"):
           pod.wait_for_unit("k3s.service", timeout=600)
