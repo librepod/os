@@ -34,7 +34,7 @@ pkgs.runCommand "image-updater-test"
     U=${updater}/bin/librepod-update
     mkdir -p $STUBS/bin
     stub() { printf '#!/bin/sh\necho "%s $*" >> "$CALLS_LOG"\n%s\n' "$1" "$2" > $STUBS/bin/$1; chmod +x $STUBS/bin/$1; }
-    stub systemctl ':'
+    stub systemctl 'case "$*" in "start k3s"*) r=no; [ ! -e "$LIBREPOD_UPDATES_DIR/record.json" ] || r=yes; echo "record=$r" >> "$CALLS_LOG";; esac'
     stub systemd-bless-boot 'cat "$STUBS/bless-status"'
     stub systemd-sysupdate '
     ch=; for a; do case $a in --definitions=*) ch=''${a##*/};; esac; done
@@ -135,8 +135,16 @@ pkgs.runCommand "image-updater-test"
     # update --offline fails: record gone before k3s starts again
     fresh; offer stable 0.5.1; touch $STUBS/update-fails; $U install now; $U tick
     expect [ ! -e $D/record.json ]; expect [ ! -e $D/k3s-db ]; expect called "start k3s"; expect [ "$(st .state)" = failed ]
+    expect called "record=no"; expect not called "record=yes"
     expect grep -qx 0.5.1 $D/failed-versions
     $U install now; $U tick; expect [ "$(grep -cx 0.5.1 $D/failed-versions)" = 1 ]   # the owner retries it; no second line
+    # a failure before update --offline (cp on a full disk) takes the same way out
+    fresh; offer stable 0.5.1; dd if=/dev/zero of=$T/db/big bs=1k count=16 2>/dev/null; $U install now
+    ( ulimit -c 0; ulimit -f 4; expect not $U tick 2>/dev/null )
+    expect not called "update --offline"; expect not called reboot; expect called "start k3s"
+    expect called "record=no"; expect not called "record=yes"
+    expect [ ! -e $D/record.json ]; expect [ ! -e $D/k3s-db ]; expect [ ! -e $D/k3s-db.partial ]
+    expect [ "$(st .state)" = failed ]; expect grep -qx 0.5.1 $D/failed-versions
     # automatic only in the window, 05:00 excluded
     fresh; offer stable 0.5.1; $U timezone Europe/Minsk; $U auto on; at Europe/Minsk "2026-11-14 12:00"; $U tick
     expect [ "$(st .state)/$(st .installAt)" = "scheduled/2026-11-15T02:00:00+03:00" ]; expect not called "update --offline"
@@ -154,6 +162,15 @@ pkgs.runCommand "image-updater-test"
     jq '.state="rolled-back"' $D/status.json > $T/s && mv $T/s $D/status.json
     touch $D/check-now; $U tick; expect [ "$(st .state)" = rolled-back ]
     offer stable 0.5.2; touch $D/check-now; $U tick; expect [ "$(st .state)" = ready ]
+    # a failed version isn't downloaded again unless the owner asks, and its final state stays
+    fresh; offer stable 0.5.1; echo 0.5.1 > $D/failed-versions
+    echo '{"state":"rolled-back","available":null,"lastCheck":null,"installAt":null,"detail":"d"}' > $D/status.json
+    expect $U tick; expect [ "$(st .state)" = rolled-back ]; expect not called acquire
+    $U install now; expect $U tick; expect called "acquire 0.5.1"; expect called "update --offline 0.5.1"
+    # the update's own boot: a stale available is not the booted version's to install
+    fresh; booted 0.5.1; touch $STUBS/list-fails
+    echo '{"state":"done","available":"0.5.1","lastCheck":null,"installAt":null,"detail":"d"}' > $D/status.json
+    expect $U tick; expect not called acquire; expect [ "$(st .state)" = done ]
     # an unreachable source keeps the state
     fresh; touch $STUBS/list-fails; $U tick; expect [ "$(st .state)" = up-to-date ]
     expect [ "$(st .detail)" = "could not reach the stable update source" ]

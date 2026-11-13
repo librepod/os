@@ -25,7 +25,11 @@ finish() { :; } # settles the install a record says was in flight (a no-op stub 
 sysupdate() { systemd-sysupdate --definitions="$DEFINITIONS/$(setting channel)" "$@"; }
 
 request() { cat "$REQUEST" 2>/dev/null || true; }
-available() { current_status | jq -r '.available // empty'; }
+# A stale one (the booted version after its own update, say) is not one to install.
+available() {
+  local v; v=$(current_status | jq -r '.available // empty')
+  if [ -n "$v" ] && newer "$v" "$(booted_version)"; then echo "$v"; fi
+}
 downloaded_version() { cat "$DOWNLOADED" 2>/dev/null || true; }
 in_failed() { grep -qxF "$1" "$FAILED" 2>/dev/null; } # version
 newer() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$1" ]; } # is $1 above $2
@@ -82,6 +86,8 @@ check() {
 download() {
   local v; v=$(available)
   if [ -z "$v" ] || [ "$v" = "$(downloaded_version)" ]; then return; fi
+  # A failed version stays where it is (and a final state with it) until the owner asks.
+  if in_failed "$v" && [ -z "$(request)" ]; then return; fi
   set_status downloading "downloading $v"
   # Vacuum drops any other download; the booted version is protected by
   # ProtectVersion=%A. Never vacuum between acquire and update --offline.
@@ -100,11 +106,29 @@ snapshot_k3s_db() { # k3s is stopped
   rm -rf "$SNAPSHOT"; mv "$SNAPSHOT.partial" "$SNAPSHOT"; sync "$STATE_DIR"
 }
 
-# Leaves the record when it has asked for the reboot; on failure k3s runs again
-# and only FAILED is left behind.
+write_record() { write_state "$RECORD" "$(jq -nc --arg f "$1" --arg t "$2" --arg p "$3" '{from: $f, to: $t, phase: $p}')"; } # from, to, phase
+
+# The one way out of an install that fails: k3s runs again and only FAILED is
+# left behind. Best effort, in a subshell without errexit: k3s must start even
+# if a step before it fails. Reads the globals install_version sets, as the
+# EXIT trap runs after its locals are gone.
+abort_install() {
+  (
+    set +e
+    rm -rf "$RECORD" "$SNAPSHOT" "$SNAPSHOT.partial"
+    in_failed "$INSTALL_TO" || echo "$INSTALL_TO" >> "$FAILED" # automatic updates skip it; the owner's request still retries
+    sync "$FAILED" "$STATE_DIR" # the record is gone for good before k3s writes again, or a cut would restore a stale snapshot
+    systemctl start k3s.service
+    set_status failed "could not install $INSTALL_TO; still on $INSTALL_FROM"
+  )
+}
+
+# Leaves the record when it has asked for the reboot. Any failure before that
+# ends in abort_install.
 install_version() { # version
-  local from; from=$(booted_version)
-  write_state "$RECORD" "$(jq -nc --arg f "$from" --arg t "$1" '{from: $f, to: $t, phase: "snapshot"}')"
+  INSTALL_TO=$1; INSTALL_FROM=$(booted_version)
+  write_record "$INSTALL_FROM" "$1" snapshot
+  trap abort_install EXIT
   set_status installing "installing $1"
   systemctl stop k3s.service
   snapshot_k3s_db
@@ -114,16 +138,11 @@ install_version() { # version
     while [ -e "$LIBREPOD_TEST_HOLD" ]; do sleep 1; done
   fi
   if ! sysupdate update --offline "$1"; then
-    # The record goes (durably) before k3s writes again, or a cut would restore a stale snapshot.
-    # FAILED keeps automatic updates from retrying it every tick; the owner's request still can.
-    rm -rf "$RECORD" "$SNAPSHOT"
-    in_failed "$1" || echo "$1" >> "$FAILED"
-    sync "$FAILED" "$STATE_DIR"
-    systemctl start k3s.service
-    set_status failed "could not install $1; still on $from"
+    trap - EXIT; abort_install
     return
   fi
-  write_state "$RECORD" "$(jq -c '.phase = "installed"' "$RECORD")"
+  write_record "$INSTALL_FROM" "$1" installed || true # the new entry boots next either way
+  trap - EXIT
   systemctl reboot
 }
 
