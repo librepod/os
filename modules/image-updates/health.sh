@@ -25,11 +25,12 @@ failing_check() {
 }
 
 # The channel's checksums, signed by a key this image trusts.
+# -L: the channel URLs are GitHub redirects, which -f alone does not follow.
 verify_source() {
   local url
   url=$(jq -r --arg c "$(setting channel)" '.[$c] // empty' "$CHANNELS" 2>/dev/null) && [ -n "$url" ] || return 1
-  curl -fsS --max-time 60 -o "$WORK/SHA256SUMS" "${url}SHA256SUMS" \
-    && curl -fsS --max-time 60 -o "$WORK/SHA256SUMS.gpg" "${url}SHA256SUMS.gpg" \
+  curl -fsSL --max-time 60 -o "$WORK/SHA256SUMS" "${url}SHA256SUMS" \
+    && curl -fsSL --max-time 60 -o "$WORK/SHA256SUMS.gpg" "${url}SHA256SUMS.gpg" \
     && gpgv --keyring "$PUBRING" "$WORK/SHA256SUMS.gpg" "$WORK/SHA256SUMS"
 }
 
