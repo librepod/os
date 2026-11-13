@@ -94,6 +94,11 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.tag }}
 
+      # image.repart runs systemd-repart under unshare --map-root-user, which
+      # Ubuntu 24.04's AppArmor denies to unprivileged users by default.
+      - name: Allow user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       # No flakehub-cache: the image's store paths are sparse disks, tens of GB as NARs.
       - uses: DeterminateSystems/determinate-nix-action@v3
 
