@@ -23,4 +23,5 @@ in
 {
   updater = mkScript "librepod-update" ./updater.sh [ ];
   health = mkScript "librepod-update-health" ./health.sh healthInputs;
+  bridge = mkScript "librepod-update-bridge" ./bridge.sh bridgeInputs;
 }

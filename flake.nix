@@ -384,6 +384,7 @@
           image-health-test = pkgs.callPackage ./checks/image-health-test.nix { };
           sentinel-test = pkgs.callPackage ./checks/sentinel-test.nix { };
           installer-test = pkgs.callPackage ./checks/installer-test.nix { };
+          image-bridge-test = pkgs.callPackage ./checks/image-bridge-test.nix { };
           onboarding-test = pkgs.callPackage ./checks/onboarding-test.nix { };
 
           # Formatting check: ensures all .nix files are formatted.
