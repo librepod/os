@@ -69,6 +69,7 @@
         self.nixosModules.usb-automount
         self.nixosModules.k3s
         self.nixosModules.nfs
+        self.nixosModules.data-disk
         self.nixosModules.image
         self.nixosModules.identity
         self.nixosModules.onboarding
@@ -97,6 +98,7 @@
         amneziawg = ./modules/amneziawg;
         casdoor = import ./modules/casdoor;
         common = import ./modules/common;
+        data-disk = ./modules/data-disk;
         disko = ./modules/disko;
         borgmatic = import ./modules/borgmatic;
         duplicati = import ./modules/duplicati;
