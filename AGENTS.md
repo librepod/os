@@ -36,7 +36,7 @@ nix fmt -- --check
 - **nfs** — Exports `/exports/k3s` (bind-mounted from `/mnt/k3s`) for K3S persistent volumes, and turns off k3s's built-in local-storage (`services.k3s.disable`). A replacement storage module must carry that line too.
 - **duplicati** — Uses a strategy pattern: `default.nix` imports either `per-pvc.nix` or `single.nix`. Has a `services.duplicati.k3sPostBackupReconcile` option supporting `argocd`, `snapshot`, or `fluxcd` reconciliation modes.
 - **gobackup** — Self-packages GoBinary (`package.nix`), generates YAML config from NixOS options via `lib.generators.toYAML`, and creates per-model systemd services/timers.
-- **onboarding** — `librepod-setup-code` publishes `/var/lib/librepod/setup-code` (written by `librepod-install`; root-only, never in `/etc/nixos`, which flake builds copy into the store) as Secret `marketplace-ui/librepod-setup-code`. No file → does nothing; marketplace-ui mints and logs a code.
+- **onboarding** — `librepod-setup-code` publishes `/var/lib/librepod/setup-code` (written by `librepod-install`; root-only, never in `/etc/nixos`, which flake builds copy into the store) as Secret `marketplace-ui/librepod-setup-code`, and logs the code with its `#code=` link and a QR code (root and wheel read the journal; marketplace-ui never logs it). No file → does nothing; marketplace-ui mints and logs a code.
 - **gitolite** — Three chained systemd services: `gitolite-init` (keygen + setup) → `gitolite-user-setup` (SSH config + clone) → `gitolite-flux-k8s-secret` (provisions K8S secret for Flux).
 
 ### Device Profiles

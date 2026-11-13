@@ -14,7 +14,10 @@
       ExecStart = lib.getExe (
         pkgs.writeShellApplication {
           name = "librepod-publish-setup-code";
-          runtimeInputs = [ pkgs.kubectl ];
+          runtimeInputs = with pkgs; [
+            kubectl
+            qrencode
+          ];
           text = builtins.readFile ./publish-setup-code.sh;
         }
       );

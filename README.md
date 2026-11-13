@@ -113,7 +113,9 @@ code, the claim code for the Marketplace setup wizard. It goes on the sticker;
 the last line prints it with the device's address, `http://<name>.local`.
 `--setup-code XXXX-XXXX-XXXX` keeps a code already printed, e.g. on a
 reinstall. The code lives in `/var/lib/librepod/setup-code` (root-only) and
-reaches the Marketplace on every boot (`onboarding` module).
+reaches the Marketplace on every boot (`onboarding` module). Without the sticker,
+`journalctl -u librepod-setup-code -o cat` on the device shows the code, its
+link and the link as a QR code.
 Updates are consent-driven: the Marketplace
 writes intent to ConfigMap `librepod-os/<hostname>` ([contract](docs/updates.md)); the host updater applies
 release tags only (`vX.Y.Z`) and boots the new version once as a trial; the

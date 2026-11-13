@@ -382,6 +382,9 @@ hostPkgs.testers.runNixOSTest {
           got = pod.succeed("k3s kubectl -n marketplace-ui get secret librepod-setup-code"
                             " -o jsonpath='{.data.code}' | base64 -d").strip()
           assert got == code.replace("-", ""), (got, code)
+          # and for a device without its sticker, the journal shows it with its link and a QR code
+          journal = pod.succeed("journalctl -u librepod-setup-code -o cat")
+          assert f"http://pod-image.local/#code={code}" in journal and "█" in journal, journal
 
       with subtest("a changed password, the host key and machine-id survive a reboot"):
           pod.succeed("echo librepod:new-pw | chpasswd")  # what onboarding will do
