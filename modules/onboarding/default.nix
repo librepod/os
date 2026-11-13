@@ -15,7 +15,7 @@
         pkgs.writeShellApplication {
           name = "librepod-publish-setup-code";
           runtimeInputs = with pkgs; [
-            kubectl
+            k3s # its kubectl: pkgs.kubectl would add ~60 MiB to each store slot
             qrencode
           ];
           text = builtins.readFile ./publish-setup-code.sh;

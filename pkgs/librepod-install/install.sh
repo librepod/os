@@ -20,7 +20,8 @@ while [ $# -gt 0 ]; do
     --name) [ $# -ge 2 ] || usage; NAME="$2"; shift 2;;
     --disk) [ $# -ge 2 ] || usage; DISK="$2"; shift 2;;
     --data-disk) [ $# -ge 2 ] || usage; DATA_DISK="$2"; shift 2;;
-    --setup-code) [ $# -ge 2 ] || usage; SETUP_CODE="$2"; shift 2;;
+    # Empty would mean "mint one": an unset variable must not orphan a sticker.
+    --setup-code) [ $# -ge 2 ] && [ -n "$2" ] || usage; SETUP_CODE="$2"; shift 2;;
     --keep-data|--wipe-data) [ -z "$DATA" ] || die "pass --keep-data or --wipe-data, not both"; DATA="${1#--}"; shift;;
     *) usage;;
   esac
