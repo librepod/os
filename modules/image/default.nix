@@ -32,6 +32,62 @@ let
   # This profile's files in a release: <releaseId>_<version>.<suffix>.
   releaseId = id + lib.optionalString (cfg.profile != null) "-${cfg.profile}";
   releaseName = "${releaseId}_${version}";
+  # systemd-pull looks gpg up in PATH; without it every release is refused, so
+  # a unit's bare PATH would block all updates.
+  sysupdate = pkgs.writeShellApplication {
+    name = "systemd-sysupdate";
+    runtimeInputs = [ pkgs.gnupg ];
+    text = ''exec ${config.systemd.package}/lib/systemd/systemd-sysupdate "$@"'';
+  };
+  ini = pkgs.formats.ini { listToValue = toString; };
+  channels = {
+    stable = cfg.updateUrl;
+    beta = cfg.betaUrl;
+  };
+  # The transfers of the channel whose release files are at url.
+  transfers =
+    url:
+    let
+      from = suffix: {
+        # Never reuse the running version's slot or UKI.
+        Transfer.ProtectVersion = "%A";
+        Source = {
+          Type = "url-file";
+          Path = url;
+          MatchPattern = "${releaseId}_@v.${suffix}";
+        };
+      };
+    in
+    {
+      "10-store" = from "store.raw.zst" // {
+        Target = {
+          Type = "partition";
+          Path = "auto";
+          MatchPattern = "store_@v";
+          MatchPartitionType = "usr";
+          ReadOnly = "yes";
+          InstancesMax = 2;
+        };
+      };
+      "20-uki" = from "efi" // {
+        Target = {
+          Type = "regular-file";
+          Path = "/EFI/Linux";
+          PathRelativeTo = "boot";
+          # Boot counting: installed as +tries-0, renamed by systemd-boot on
+          # every boot and by systemd-bless-boot once the health gate passes.
+          MatchPattern = [
+            "${id}_@v+@l-@d.efi"
+            "${id}_@v+@l.efi"
+            "${id}_@v.efi"
+          ];
+          Mode = "0644";
+          TriesLeft = cfg.tries;
+          TriesDone = 0;
+          InstancesMax = 2;
+        };
+      };
+    };
   # udev marks the disk systemd-boot started from (initrd) and the disk holding
   # / (after the switch): a copy of this image on another drive is never mounted.
   bootDiskRules = ''
@@ -51,6 +107,11 @@ in
       # Only the newest stable release is offered; older ones stay under their tags.
       default = "https://github.com/librepod/os/releases/latest/download/";
       description = "Folder holding SHA256SUMS, SHA256SUMS.gpg and the release files.";
+    };
+    betaUrl = lib.mkOption {
+      type = lib.types.str;
+      default = "https://github.com/librepod/os/releases/download/beta/";
+      description = "The beta channel's folder: the same files as updateUrl, for devices that chose beta.";
     };
     pubring = lib.mkOption {
       type = lib.types.path;
@@ -152,50 +213,10 @@ in
       };
     };
 
+    # The stable channel's transfers: what systemd-sysupdate reads on its own.
     systemd.sysupdate = {
       enable = true;
-      transfers =
-        let
-          from = suffix: {
-            # Never reuse the running version's slot or UKI.
-            Transfer.ProtectVersion = "%A";
-            Source = {
-              Type = "url-file";
-              Path = cfg.updateUrl;
-              MatchPattern = "${releaseId}_@v.${suffix}";
-            };
-          };
-        in
-        {
-          "10-store" = from "store.raw.zst" // {
-            Target = {
-              Type = "partition";
-              Path = "auto";
-              MatchPattern = "store_@v";
-              MatchPartitionType = "usr";
-              ReadOnly = "yes";
-              InstancesMax = 2;
-            };
-          };
-          "20-uki" = from "efi" // {
-            Target = {
-              Type = "regular-file";
-              Path = "/EFI/Linux";
-              PathRelativeTo = "boot";
-              # Boot counting: installed as +tries-0, renamed by systemd-boot on
-              # every boot and by systemd-bless-boot once the health gate passes.
-              MatchPattern = [
-                "${id}_@v+@l-@d.efi"
-                "${id}_@v+@l.efi"
-                "${id}_@v.efi"
-              ];
-              Mode = "0644";
-              TriesLeft = cfg.tries;
-              TriesDone = 0;
-              InstancesMax = 2;
-            };
-          };
-        };
+      transfers = transfers cfg.updateUrl;
     };
     # What a release publishes for this profile: the UKI and store slot devices
     # update from, and the whole disk librepod-install writes.
@@ -208,19 +229,24 @@ in
           zstd -q -T0 ${config.system.build.image}/${config.image.filePath} -o $out/${releaseName}.raw.zst
         '';
 
-    # Only the consent updater starts an update, never a timer.
+    # Only librepod-update starts an update, never a timer.
     systemd.timers.systemd-sysupdate.wantedBy = lib.mkForce [ ];
-    # When this exists, systemd-pull ignores the vendor keyring.
-    environment.etc."systemd/import-pubring.pgp".source = cfg.pubring;
-    environment.systemPackages = [
-      (pkgs.writeShellApplication {
-        name = "systemd-sysupdate";
-        # systemd-pull looks gpg up in PATH; without it every release is
-        # refused, so a unit's bare PATH would block all updates.
-        runtimeInputs = [ pkgs.gnupg ];
-        text = ''exec ${config.systemd.package}/lib/systemd/systemd-sysupdate "$@"'';
-      })
-    ];
+    environment.etc = {
+      # When this exists, systemd-pull ignores the vendor keyring.
+      "systemd/import-pubring.pgp".source = cfg.pubring;
+      # One definition set per channel, for librepod-update to pass to
+      # systemd-sysupdate: the channel is the owner's choice, made at run time.
+      "librepod/channels.json".text = builtins.toJSON channels;
+    }
+    // lib.concatMapAttrs (
+      channel: url:
+      lib.mapAttrs' (name: value: {
+        name = "librepod/sysupdate/${channel}/${name}.transfer";
+        value.source = ini.generate "${name}.transfer" value;
+      }) (transfers url)
+    ) channels;
+    environment.systemPackages = [ sysupdate ];
+    system.build.sysupdate = sysupdate;
 
     # Pulled in only on counted boots: systemd-bless-boot requires
     # boot-complete.target, and that requires this.

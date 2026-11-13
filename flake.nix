@@ -57,8 +57,9 @@
         self.nixosModules.onboarding
       ];
 
-      # The image base stack: no Nix, no updater, no disko, no per-device
-      # users on the device. Shared verbatim by mkImage and the image E2E node.
+      # The image base stack: no Nix, no flake updater (modules/updates; an
+      # image updates through image-updates), no disko, no per-device users on
+      # the device. Shared verbatim by mkImage and the image E2E node.
       imageModules = [
         {
           nixpkgs.overlays = [ self.overlays.default ];
@@ -70,6 +71,7 @@
         self.nixosModules.k3s
         self.nixosModules.nfs
         self.nixosModules.image
+        self.nixosModules.image-updates
         self.nixosModules.identity
         self.nixosModules.onboarding
         # Every image install shares it, so it is frozen: changing it needs a
@@ -104,6 +106,7 @@
         gobackup = import ./modules/gobackup;
         identity = ./modules/identity;
         image = ./modules/image;
+        image-updates = ./modules/image-updates;
         k3s = import ./modules/k3s;
         netboot = import ./modules/netboot;
         networking = import ./modules/networking;
@@ -183,7 +186,7 @@
         # per-device is in it (see modules/identity).
         #   version — becomes system.image.version, the sysupdate version
         #   device  — as for mkDevice
-        #   modules — extra modules (until phase 5: librepod.image.healthCheck)
+        #   modules — extra modules
         mkImage =
           {
             device,
@@ -206,19 +209,7 @@
         # One profile's files as a release publishes them (release-stable.yml).
         releaseFiles =
           { device, version }:
-          (self.lib.mkImage {
-            inherit device version;
-            modules = [
-              (
-                { pkgs, ... }:
-                {
-                  # shortcut: blesses every boot; only an update's new image runs
-                  # it, and nothing updates before 8ss.5 brings the real check.
-                  librepod.image.healthCheck = "${pkgs.coreutils}/bin/true";
-                }
-              )
-            ];
-          }).config.system.build.releaseFiles;
+          (self.lib.mkImage { inherit device version; }).config.system.build.releaseFiles;
       };
 
       packages.x86_64-linux.librepod-install =
@@ -324,16 +315,28 @@
           # mkImage produces an evaluable disk image per hw profile.
           image-profiles =
             let
+              c =
+                (self.lib.mkImage {
+                  device = "lenovo-m710q";
+                  version = "0";
+                }).config;
               stub =
                 { pkgs, ... }:
                 {
                   librepod.image = {
                     updateUrl = "https://updates.invalid/";
                     pubring = pkgs.writeText "empty.pgp" "";
-                    healthCheck = "${pkgs.coreutils}/bin/true";
                   };
                 };
             in
+            assert nixpkgs.lib.hasSuffix "/bin/librepod-update-health" c.librepod.image.healthCheck;
+            assert
+              builtins.fromJSON c.environment.etc."librepod/channels.json".text == {
+                stable = "https://github.com/librepod/os/releases/latest/download/";
+                beta = "https://github.com/librepod/os/releases/download/beta/";
+              };
+            assert c.environment.etc ? "librepod/sysupdate/beta/20-uki.transfer";
+            assert c.systemd.services.librepod-update-fallback.before == [ "k3s.service" ];
             pkgs.runCommand "image-profiles-eval"
               {
                 # Same as mk-device: evaluate fully, build nothing.

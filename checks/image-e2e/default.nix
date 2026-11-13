@@ -138,7 +138,6 @@ hostPkgs.testers.runNixOSTest {
         updateUrl = "http://server/";
         pubring = "${releaseKey}/release.pgp";
         profile = "vm";
-        healthCheck = "${pkgs.coreutils}/bin/true";
       };
 
       # VM hardware: a hw profile's job on a device. The M90q's storage
