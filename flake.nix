@@ -380,6 +380,7 @@
             pkgs.runCommand "installed-device" { } "touch $out";
 
           updater-test = pkgs.callPackage ./checks/updater-test.nix { };
+          image-updater-test = pkgs.callPackage ./checks/image-updater-test.nix { };
           sentinel-test = pkgs.callPackage ./checks/sentinel-test.nix { };
           installer-test = pkgs.callPackage ./checks/installer-test.nix { };
           onboarding-test = pkgs.callPackage ./checks/onboarding-test.nix { };
