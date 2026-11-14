@@ -191,7 +191,8 @@ jobs:
           make_latest: false
 
       # Candidates reach beta in tag order: a re-run of an older tag leaves it be.
-      # The images go first and the signed sums last, so that beta's SHA256SUMS
+      # A re-run of the same tag copies again: a failed copy leaves its .efi
+      # files on beta, but not the sums that name them. The images go first and the signed sums last, so that beta's SHA256SUMS
       # never names a file that is not there yet.
       - name: Copy to beta
         env:
@@ -203,8 +204,9 @@ jobs:
           if gh release view beta >/dev/null 2>&1; then
             old="$(gh release view beta --json assets --jq '.assets[].name')"
             held="$(sed -n 's/^librepod-[^_]*_\(.*\)\.efi$/\1/p' <<<"$old" | sort -V | tail -n1)"
-            if [ -n "$held" ] && [ "$(printf '%s\n' "$held" "${TAG#v}" | sort -V | tail -n1)" = "$held" ]; then
-              echo "beta holds $held, at or above ${TAG#v}: left as it is"; exit 0
+            if [ -n "$held" ] && [ "$held" != "${TAG#v}" ] \
+               && [ "$(printf '%s\n' "$held" "${TAG#v}" | sort -V | tail -n1)" = "$held" ]; then
+              echo "beta holds $held, above ${TAG#v}: left as it is"; exit 0
             fi
           else
             gh release create beta --prerelease --latest=false --title beta \
