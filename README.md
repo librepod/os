@@ -80,8 +80,8 @@ plus per-device identity — used by the small flake an installed device owns at
   outputs = { librepod, ... }: {
     nixosConfigurations.pod-abc123 = librepod.lib.mkDevice {
       name = "pod-abc123";
-      # the tag above, from the lock; written to /etc/librepod-release
-      version = (builtins.fromJSON (builtins.readFile ./flake.lock)).nodes.librepod.original.ref;
+      # the tag above, from the lock (master when none); written to /etc/librepod-release
+      version = (builtins.fromJSON (builtins.readFile ./flake.lock)).nodes.librepod.original.ref or "master";
       device = "lenovo-m710q";          # ./hw/<name>
       modules = [
         ./install.nix   # disk layout + stateVersion, frozen on install day
@@ -154,10 +154,10 @@ curl https://raw.githubusercontent.com/librepod/librepod-install/master/librepod
 
 ```bash
 nix flake check            # eval checks, stubbed installer/onboarding scenarios, the updater, health gate and bridge (image-updater-test, image-health-test, image-bridge-test), formatting
-nix build .#image-e2e -L   # the image installed and booted in a QEMU VM
+nix build .#image-e2e -L   # the image installed, booted and updated in a QEMU VM
 ```
 
-`image-e2e` installs the appliance image on a VM's disks with `librepod-install` and boots it, with the device's identity outside Nix (see `modules/identity`). It needs x86_64-linux with KVM (`/dev/kvm` writable). Nix caches the result, so add `--rebuild` to run it again on unchanged code.
+`image-e2e` installs the appliance image on a VM's disks with `librepod-install` and boots it, with the device's identity outside Nix (see `modules/identity`). It also covers the update flow: stable and beta updates, a rollback with k3s's data restored, and a power cut during an install. It takes 45–90 min and needs x86_64-linux with KVM (`/dev/kvm` writable). Nix caches the result, so add `--rebuild` to run it again on unchanged code.
 
 ## Branching & Releases
 
@@ -183,7 +183,7 @@ LibrePod OS uses trunk-based development — there is no `develop` branch.
 - **Tags containing `-` are refused** (no `v0.5.0-rc.1`): systemd and `sort -V` order them above their release, so a device on one would never take its stable. Versions are plain `X.Y.Z`.
 - Library devices pin any tag with `github:librepod/os/vX.Y.Z`, promoted or not.
 
-If a dispatch run fails after the tag has already landed (for example the release-publishing step errored), do **not** delete the tag — re-dispatching will refuse ("Tag vX.Y.Z already exists"). Use **Re-run failed jobs** on the same run. Don't create the release by hand: without the images and the signed `SHA256SUMS` devices refuse it, and Promote does too.
+If a dispatch run fails after the tag has already landed (for example the release-publishing step errored), do **not** delete the tag — re-dispatching will refuse ("Tag vX.Y.Z already exists"). Use **Re-run failed jobs** on the same run, within 3 days: the built images are kept that long. After that, cut the next patch tag. Don't create the release by hand: without the images and the signed `SHA256SUMS` devices refuse it, and Promote does too.
 
 ## License
 

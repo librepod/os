@@ -13,7 +13,7 @@ nix flake check
 nixos-rebuild build --flake .#<hostname>
 
 # Format check (nixfmt)
-nix fmt -- --check
+nix fmt -- --ci
 ```
 
 ## Architecture
