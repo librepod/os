@@ -34,8 +34,7 @@
         programs.nixfmt.enable = true;
       };
 
-      # The appliance base stack. Shared verbatim by mkDevice and the E2E
-      # test node so the VM runs exactly what a device runs.
+      # The appliance base stack of a library device (mkDevice).
       applianceModules = [
         # Pinned k3s from this os release
         {
@@ -53,8 +52,34 @@
         # PV storage — the one place to swap it; the module also turns off
         # k3s's built-in local-storage
         self.nixosModules.nfs
-        self.nixosModules.updates
+        self.nixosModules.onboarding
       ];
+
+      # The image base stack: no Nix, no flake updater, no disko, no per-device
+      # users on the device. It updates itself through image-updates. Shared
+      # verbatim by mkImage and the image E2E node.
+      imageModules = [
+        {
+          nixpkgs.overlays = [ self.overlays.default ];
+        }
+        self.nixosModules.common
+        self.nixosModules.networking
+        self.nixosModules.ssh
+        self.nixosModules.usb-automount
+        self.nixosModules.k3s
+        self.nixosModules.nfs
+        self.nixosModules.data-disk
+        self.nixosModules.image
+        self.nixosModules.image-updates
+        self.nixosModules.identity
+        self.nixosModules.onboarding
+        # Every image install shares it, so it is frozen: changing it needs a
+        # migration for every installed device.
+        { system.stateVersion = "26.05"; }
+      ];
+
+      # Supported profile by name, or a consumer-supplied module path
+      hwModule = device: if builtins.isString device then (./hw + "/${device}") else device;
     in
     {
       # Overlay that pins k3s to a specific version via k3s-nixpkgs.
@@ -73,19 +98,22 @@
         amneziawg = ./modules/amneziawg;
         casdoor = import ./modules/casdoor;
         common = import ./modules/common;
+        data-disk = ./modules/data-disk;
         disko = ./modules/disko;
         borgmatic = import ./modules/borgmatic;
         duplicati = import ./modules/duplicati;
-        frpc = import ./modules/frpc;
         gitolite = import ./modules/gitolite;
         gobackup = import ./modules/gobackup;
+        identity = ./modules/identity;
+        image = ./modules/image;
+        image-updates = ./modules/image-updates;
         k3s = import ./modules/k3s;
         netboot = import ./modules/netboot;
         networking = import ./modules/networking;
         nfs = import ./modules/nfs;
         nix = import ./modules/nix;
+        onboarding = import ./modules/onboarding;
         ssh = import ./modules/ssh;
-        updates = import ./modules/updates;
         users = import ./modules/users;
         # Also available standalone — NixOS deduplicates if imported with `common`.
         usb-automount = ./modules/common/usb-automount.nix;
@@ -93,6 +121,7 @@
 
       lib = {
         applianceModules = applianceModules;
+        imageModules = imageModules;
 
         # Creates a NixOS configuration with standard modules (disko).
         # Args:
@@ -122,7 +151,7 @@
         #   device  — supported profile name under ./hw (string), or any
         #             hardware module path (unsupported/personal devices)
         #   modules — install-day facts (disk layout, stateVersion) and
-        #             identity modules (users, frpc, per-device bits)
+        #             identity modules (users, per-device bits)
         mkDevice =
           {
             name,
@@ -141,32 +170,56 @@
             modules =
               applianceModules
               ++ [
-                # Supported profile by name, or a consumer-supplied module path
-                (if builtins.isString device then (./hw + "/${device}") else device)
+                (hwModule device)
                 { networking.hostName = name; }
-                # The updater reports this, not flake.lock: the two disagree
-                # after a failed or rolled-back update.
+                # Existing device flakes pass `version`; the file keeps the tag
+                # readable on the device.
                 { environment.etc."librepod-release".text = version; }
-                # Appliances are updateable; identity can override (mkDefault).
-                { librepod.updates.enable = nixpkgs.lib.mkDefault true; }
               ]
               ++ modules;
           };
+
+        # Builds one update-ready disk image per hardware profile; nothing
+        # per-device is in it (see modules/identity).
+        #   version — becomes system.image.version, the sysupdate version
+        #   device  — as for mkDevice
+        #   modules — extra modules
+        mkImage =
+          {
+            device,
+            version,
+            modules ? [ ],
+          }:
+          nixpkgs.lib.nixosSystem {
+            system = "x86_64-linux";
+            modules =
+              imageModules
+              ++ [
+                (hwModule device)
+                { system.image.version = version; }
+                # A release names each supported profile's files after it.
+                { librepod.image.profile = nixpkgs.lib.mkIf (builtins.isString device) device; }
+              ]
+              ++ modules;
+          };
+
+        # One profile's files as a release publishes them (release-stable.yml).
+        releaseFiles =
+          { device, version }:
+          (self.lib.mkImage { inherit device version; }).config.system.build.releaseFiles;
       };
 
       packages.x86_64-linux.librepod-install =
         nixpkgs.legacyPackages.x86_64-linux.callPackage ./pkgs/librepod-install
           { };
 
-      # E2E (KVM): nix build .#updates-e2e — NOT in checks.*, and releases don't wait for it:
-      # run it before tagging (locally, or Actions → Updates E2E; manual only, about an hour)
-      updates-e2e = nixpkgs.legacyPackages.x86_64-linux.callPackage ./checks/e2e {
-        inherit self nixpkgs;
-      };
+      # Local-only (KVM), throwaway: nix build .#ab-spike — A/B image updates with sysupdate
+      ab-spike = nixpkgs.legacyPackages.x86_64-linux.callPackage ./checks/ab-spike { inherit nixpkgs; };
 
-      # Local-only (KVM): nix build .#trial-spike — bootloader mechanics of the trial boot
-      trial-spike = nixpkgs.legacyPackages.x86_64-linux.callPackage ./checks/e2e/trial-spike.nix {
-        inherit nixpkgs;
+      # Local-only (KVM): nix build .#image-e2e — the appliance image with its identity
+      # outside Nix, on a box with extra drives
+      image-e2e = nixpkgs.legacyPackages.x86_64-linux.callPackage ./checks/image-e2e {
+        inherit self nixpkgs;
       };
 
       # Verify all modules can be evaluated without error.
@@ -230,6 +283,13 @@
                   ];
                 };
             in
+            # The owner updates by `nix flake update` (README).
+            assert nixpkgs.lib.all
+              (f: builtins.elem f (mk "lenovo-m710q").config.nix.settings.experimental-features)
+              [
+                "nix-command"
+                "flakes"
+              ];
             pkgs.runCommand "mk-device-eval"
               {
                 # Forces full evaluation of the appliance; result discarded
@@ -242,6 +302,48 @@
               }
               ''
                 echo "mkDevice evaluates for both device forms — check passed."
+                touch $out
+              '';
+
+          # mkImage produces an evaluable disk image per hw profile.
+          image-profiles =
+            let
+              c =
+                (self.lib.mkImage {
+                  device = "lenovo-m710q";
+                  version = "0";
+                }).config;
+              stub =
+                { pkgs, ... }:
+                {
+                  librepod.image = {
+                    updateUrl = "https://updates.invalid/";
+                    pubring = pkgs.writeText "empty.pgp" "";
+                  };
+                };
+            in
+            assert nixpkgs.lib.hasSuffix "/bin/librepod-update-health" c.librepod.image.healthCheck;
+            assert
+              builtins.fromJSON c.environment.etc."librepod/channels.json".text == {
+                stable = "https://github.com/librepod/os/releases/latest/download/";
+                beta = "https://github.com/librepod/os/releases/download/beta/";
+              };
+            assert c.environment.etc ? "librepod/sysupdate/beta/20-uki.transfer";
+            assert c.systemd.services.librepod-update-fallback.before == [ "k3s.service" ];
+            pkgs.runCommand "image-profiles-eval"
+              {
+                # Same as mk-device: evaluate fully, build nothing.
+                forcedEval = builtins.deepSeq (map (
+                  hw:
+                  (self.lib.mkImage {
+                    device = hw;
+                    version = "0";
+                    modules = [ stub ];
+                  }).config.system.build.image.drvPath
+                ) hwProfiles) "";
+              }
+              ''
+                echo "mkImage evaluates for every hw profile — check passed."
                 touch $out
               '';
 
@@ -273,9 +375,11 @@
             assert got == want || throw "an installed device would change: ${got}, expected ${want}";
             pkgs.runCommand "installed-device" { } "touch $out";
 
-          updater-test = pkgs.callPackage ./checks/updater-test.nix { };
-          sentinel-test = pkgs.callPackage ./checks/sentinel-test.nix { };
+          image-updater-test = pkgs.callPackage ./checks/image-updater-test.nix { };
+          image-health-test = pkgs.callPackage ./checks/image-health-test.nix { };
           installer-test = pkgs.callPackage ./checks/installer-test.nix { };
+          image-bridge-test = pkgs.callPackage ./checks/image-bridge-test.nix { };
+          onboarding-test = pkgs.callPackage ./checks/onboarding-test.nix { };
 
           # Formatting check: ensures all .nix files are formatted.
           formatting = treefmtEval.config.build.check self;

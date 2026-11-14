@@ -13,7 +13,7 @@ nix flake check
 nixos-rebuild build --flake .#<hostname>
 
 # Format check (nixfmt)
-nix fmt -- --check
+nix fmt -- --ci
 ```
 
 ## Architecture
@@ -26,7 +26,7 @@ nix fmt -- --check
 
 ### Module Conventions
 
-- **Option-based modules** (`frpc`, `users`) define custom options under the `librepod.*` namespace and use `lib.mkIf cfg.enable` to conditionally enable config.
+- **Option-based modules** (`users`) define custom options under the `librepod.*` namespace and use `lib.mkIf cfg.enable` to conditionally enable config.
 - **Direct-config modules** (`nfs`, `networking`, `ssh`, `nix`, `common`, `dns-server`) configure NixOS options directly with no custom option namespace — they activate on import.
 - **Imports-based modules** (`duplicati`, `gobackup`, `gitolite`) are more complex, often defining multiple systemd services.
 
@@ -36,11 +36,14 @@ nix fmt -- --check
 - **nfs** — Exports `/exports/k3s` (bind-mounted from `/mnt/k3s`) for K3S persistent volumes, and turns off k3s's built-in local-storage (`services.k3s.disable`). A replacement storage module must carry that line too.
 - **duplicati** — Uses a strategy pattern: `default.nix` imports either `per-pvc.nix` or `single.nix`. Has a `services.duplicati.k3sPostBackupReconcile` option supporting `argocd`, `snapshot`, or `fluxcd` reconciliation modes.
 - **gobackup** — Self-packages GoBinary (`package.nix`), generates YAML config from NixOS options via `lib.generators.toYAML`, and creates per-model systemd services/timers.
+- **onboarding** — `librepod-setup-code` publishes `/var/lib/librepod/setup-code` (written by `librepod-install`; root-only, never in `/etc/nixos`, which flake builds copy into the store) as Secret `marketplace-ui/librepod-setup-code`, and logs the code with its `#code=` link and a QR code (root and wheel read the journal; marketplace-ui never logs it). No file → does nothing; marketplace-ui mints and logs a code.
 - **gitolite** — Three chained systemd services: `gitolite-init` (keygen + setup) → `gitolite-user-setup` (SSH config + clone) → `gitolite-flux-k8s-secret` (provisions K8S secret for Flux).
 
 ### Device Profiles
 
-A device is `lib.mkDevice { name, version, device, modules }`: the shared base stack (`applianceModules` in `flake.nix`, which the E2E VM runs too), plus a hardware profile from `hw/<name>/` (boot loader, kernel, hardware facts) or any module path, plus the device's own modules (install-day facts like the disk layout and `stateVersion`, then identity). `librepod-install` (`pkgs/librepod-install`) writes the device flake in `/etc/nixos` that calls it; the updater repins that flake's `librepod` input.
+A device is `lib.mkDevice { name, version, device, modules }`: the shared base stack (`applianceModules` in `flake.nix`), plus a hardware profile from `hw/<name>/` (boot loader, kernel, hardware facts) or any module path, plus the device's own modules (install-day facts like the disk layout and `stateVersion`, then identity). The device flake in `/etc/nixos` calls it. Nothing on the device updates it: the owner bumps the flake's `librepod` pin (`github:librepod/os/vX.Y.Z`, master or the `unstable` tag) and runs `nixos-rebuild switch`.
+
+An image device is `lib.mkImage { device, version, modules }`: `imageModules` (the base stack without Nix, the flake updater, disko or per-device users; it includes `modules/image-updates`, the image's own updater) plus the same hardware profile, built as one A/B disk image by `modules/image`. Nothing per-device is in it; `modules/identity` lists what each device keeps outside the image. `librepod-install` (`pkgs/librepod-install`) writes the image to a device's OS disk, with its name, data disk and optional SSH keys on root, and registers the boot entry.
 
 ## Nix Style
 

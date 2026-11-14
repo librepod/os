@@ -4,8 +4,8 @@ pkgs.runCommand "installer-test"
   {
     buildInputs = with pkgs; [
       bash
-      jq
-      nix # parses the generated install.nix
+      zstd
+      openssh
     ];
   }
   ''
@@ -14,143 +14,68 @@ pkgs.runCommand "installer-test"
     export CALLS_LOG="$ROOT/calls.log"
     : > "$CALLS_LOG"
     export PATH="$ROOT/bin:$PATH"
-    mkdir -p "$ROOT/bin" "$ROOT/mnt" "$ROOT/identity"
+    mkdir -p "$ROOT/bin"
     INSTALL="${../pkgs/librepod-install/install.sh}"
-    cat > "$ROOT/identity/identity.nix" <<'EOF'
-    { ... }: { }
-    EOF
 
-    cat > "$ROOT/bin/disko" <<'EOF'
-    #!/bin/sh
-    echo "disko $*" >> "$CALLS_LOG"
-    EOF
-    chmod +x "$ROOT/bin/disko"
-
-    cat > "$ROOT/bin/nixos-install" <<'EOF'
-    #!/bin/sh
-    echo "nixos-install $*" >> "$CALLS_LOG"
-    EOF
-    chmod +x "$ROOT/bin/nixos-install"
-
-    cat > "$ROOT/bin/nix" <<EOF
-    #!/bin/sh
-    echo "nix \$*" >> "$CALLS_LOG"
-    case " \$* " in
-      *" flake lock "*) : > flake.lock ;;  # would fetch the tag and write flake.lock
-      *getFlake*) printf %s "$ROOT/src" ;;  # the fetched release source
-      *system.nixos.release*) printf 26.05 ;;
-    esac
-    EOF
-    chmod +x "$ROOT/bin/nix"
-    mkdir -p "$ROOT/src/modules/disko"
-    cp ${../modules/disko/default.nix} "$ROOT/src/modules/disko/default.nix"
-
-    export LIBREPOD_TARGET_MNT="$ROOT/mnt" LIBREPOD_WORKDIR="$ROOT/work" \
-           DISKO_BIN="$ROOT/bin/disko" NIXOS_INSTALL_BIN="$ROOT/bin/nixos-install" \
-           NIX_BIN="$ROOT/bin/nix"
-
-    # ---- scenario 0: flag missing its value → usage, not a crash ------------
-    if bash "$INSTALL" --device >/dev/null 2>&1; then
-      echo "FAIL: missing flag value not rejected"; exit 1
-    fi
-
-    # ---- scenario 1: profile-name device form --------------------------------
-    bash "$INSTALL" \
-      --device lenovo-m710q --name pod-test --os-tag v0.3.5 \
-      --identity "$ROOT/identity/identity.nix"
-
-    # headless: the wipe must be auto-confirmed (disko ≥1.12 prompts otherwise)
-    grep -q "disko --flake .*#pod-test --mode destroy,format,mount --root-mountpoint $ROOT/mnt --yes-wipe-all-disks$" "$CALLS_LOG" \
-      || { echo "FAIL: disko invocation wrong"; exit 1; }
-    grep -q "nixos-install --root $ROOT/mnt --flake .*#pod-test --no-root-passwd" "$CALLS_LOG" \
-      || { echo "FAIL: nixos-install invocation wrong"; exit 1; }
-    grep -q 'github:librepod/os/v0.3.5' "$ROOT/mnt/etc/nixos/flake.nix" \
-      || { echo "FAIL: pin line missing/wrong"; exit 1; }
-    grep -q 'name = "pod-test"' "$ROOT/mnt/etc/nixos/flake.nix" \
-      || { echo "FAIL: device name missing"; exit 1; }
-    grep -qF 'version = (builtins.fromJSON (builtins.readFile ./flake.lock)).nodes.librepod.original.ref;' \
-      "$ROOT/mnt/etc/nixos/flake.nix" \
-      || { echo "FAIL: version not taken from the lock"; exit 1; }
-    grep -q 'device = "lenovo-m710q"' "$ROOT/mnt/etc/nixos/flake.nix" \
-      || { echo "FAIL: hw profile missing"; exit 1; }
-    grep -q './identity.nix' "$ROOT/mnt/etc/nixos/flake.nix" \
-      || { echo "FAIL: identity not referenced"; exit 1; }
-    [ "$(stat -c %a "$ROOT/mnt/etc/nixos/identity.nix")" = "600" ] \
-      || { echo "FAIL: identity.nix not 0600"; exit 1; }
-    # Install-day facts: the release's layout copied in, the disk and the
-    # stateVersion written down, so later releases cannot change them.
-    FACTS="$ROOT/mnt/etc/nixos/install.nix"
-    grep -q '\./install\.nix' "$ROOT/mnt/etc/nixos/flake.nix" \
-      || { echo "FAIL: install.nix not referenced"; exit 1; }
-    cmp -s "$ROOT/src/modules/disko/default.nix" "$ROOT/mnt/etc/nixos/disk.nix" \
-      || { echo "FAIL: disk.nix is not the release's layout"; exit 1; }
-    grep -qF 'imports = [ ./disk.nix ];' "$FACTS" \
-      && grep -qF 'disko.devices.disk.main.device = "/dev/nvme0n1";' "$FACTS" \
-      && grep -qF 'disko.devices.disk.data.device = "/dev/sda";' "$FACTS" \
-      && grep -qF 'system.stateVersion = "26.05";' "$FACTS" \
-      || { echo "FAIL: install.nix wrong: $(cat "$FACTS")"; exit 1; }
-    NIX_STATE_DIR="$ROOT/nix" nix-instantiate --store dummy:// --parse "$FACTS" >/dev/null \
-      || { echo "FAIL: install.nix does not parse"; exit 1; }
-
-    # ---- scenario 2: module-path device form ---------------------------------
-    : > "$CALLS_LOG"
-    echo '{ ... }: { }' > "$ROOT/my-hardware.nix"
-    bash "$INSTALL" \
-      --device "$ROOT/my-hardware.nix" --name pod-test --os-tag v0.3.5 \
-      --identity "$ROOT/identity/identity.nix"
-
-    # path form must land as a Nix path, not a quoted ./hw/<name> string
-    grep -q 'device = \./hardware\.nix;' "$ROOT/mnt/etc/nixos/flake.nix" \
-      || { echo "FAIL: module-path device not emitted as a path"; exit 1; }
-    [ -f "$ROOT/mnt/etc/nixos/hardware.nix" ] \
-      || { echo "FAIL: hardware module not installed next to the flake"; exit 1; }
-
-    # ---- scenario 3: --disk for a SATA-only machine ----------------------------
-    bash "$INSTALL" \
-      --device lenovo-m710q --name pod-test --os-tag v0.3.5 --disk /dev/sda \
-      --identity "$ROOT/identity/identity.nix"
-    grep -qF 'disko.devices.disk.main.device = "/dev/sda";' "$ROOT/mnt/etc/nixos/install.nix" \
-      || { echo "FAIL: --disk not written to install.nix"; exit 1; }
-
-    # ---- scenario 3b: --data-disk for a two-NVMe machine ----------------------
-    bash "$INSTALL" \
-      --device lenovo-m710q --name pod-test --os-tag v0.3.5 --data-disk /dev/nvme1n1 \
-      --identity "$ROOT/identity/identity.nix"
-    grep -qF 'disko.devices.disk.data.device = "/dev/nvme1n1";' "$ROOT/mnt/etc/nixos/install.nix" \
-      || { echo "FAIL: --data-disk not written to install.nix"; exit 1; }
-
-    # ---- scenario 4: a disk value that would break out of the Nix string -------
-    : > "$CALLS_LOG"
-    if bash "$INSTALL" \
-      --device lenovo-m710q --name pod-test --os-tag v0.3.5 --disk '/dev/sda"; x = "' \
-      --identity "$ROOT/identity/identity.nix" >/dev/null 2>&1; then
-      echo "FAIL: an invalid --disk was accepted"; exit 1
-    fi
-    ! grep -q disko "$CALLS_LOG" || { echo "FAIL: disko ran for an invalid --disk"; exit 1; }
-
-    # ---- scenario 5: names that are no hostname, or break out of the Nix ------
-    : > "$CALLS_LOG"
-    for name in 'a" ; x = import ./evil ; #' pod.e2e 1pod Pod; do
-      if bash "$INSTALL" \
-        --device lenovo-m710q --name "$name" --os-tag v0.3.5 \
-        --identity "$ROOT/identity/identity.nix" >/dev/null 2>&1; then
-        echo "FAIL: invalid --name '$name' was accepted"; exit 1
-      fi
+    # Every tool that writes a disk: a refusal must call none of them.
+    for tool in wipefs dd sgdisk sfdisk mkfs.ext4 resize2fs efibootmgr mount; do
+      printf '#!/bin/sh\necho "%s $*" >> "$CALLS_LOG"\n' "$tool" > "$ROOT/bin/$tool"
+      chmod +x "$ROOT/bin/$tool"
     done
-    ! grep -q disko "$CALLS_LOG" || { echo "FAIL: disko ran for an invalid --name"; exit 1; }
 
-    # ---- scenario 6: GitHub answers without a tag → the --os-tag hint ---------
-    cat > "$ROOT/bin/curl" <<'EOF'
-    #!/bin/sh
-    echo '{"message":"API rate limit exceeded"}'
-    EOF
-    chmod +x "$ROOT/bin/curl"
-    if msg="$(CURL_BIN="$ROOT/bin/curl" bash "$INSTALL" --device lenovo-m710q --name pod-test \
-                --identity "$ROOT/identity/identity.nix" 2>&1)"; then
-      echo "FAIL: installed with no release tag"; exit 1
-    fi
-    grep -q "pass --os-tag" <<< "$msg" \
-      || { echo "FAIL: no --os-tag hint for a tagless answer: $msg"; exit 1; }
+    # A whole disk image as far as the installer looks: GPT headers at the
+    # second sector and in the last one.
+    { head -c 512 /dev/zero; printf 'EFI PART'; head -c 504 /dev/zero; } > "$ROOT/ok.img"
+    head -c 1024 /dev/zero > "$ROOT/zeros.img"
+    { printf hsqs; head -c 1020 /dev/zero; } > "$ROOT/slot.img" # a squashfs store slot
+
+    refused() { # expected message, then the installer's arguments
+      local want="$1" msg
+      shift
+      if msg="$(bash "$INSTALL" "$@" 2>&1)"; then
+        echo "FAIL: accepted: $*"; exit 1
+      fi
+      grep -qF -- "$want" <<< "$msg" || { echo "FAIL: '$*' refused without '$want': $msg"; exit 1; }
+      [ ! -s "$CALLS_LOG" ] || { echo "FAIL: '$*' wrote a disk: $(cat "$CALLS_LOG")"; exit 1; }
+    }
+
+    refused usage: --image
+    for name in 'a" ; x = import ./evil ; #' pod.e2e 1pod Pod; do
+      refused "invalid name" --image "$ROOT/ok.img" --name "$name"
+    done
+    refused "no such file" --image "$ROOT/missing.img" --name pod-test
+    refused "not a whole disk image" --image "$ROOT/zeros.img" --name pod-test
+    refused "not a whole disk image" --image "$ROOT/slot.img" --name pod-test
+    refused "not both" --image "$ROOT/ok.img" --name pod-test --keep-data --wipe-data
+    refused "not a block device" --image "$ROOT/ok.img" --name pod-test --disk "$ROOT/ok.img"
+    for code in 7KQM-X3RT-9VH0 7KQMX3RT9VH 7KQMX3RT9VHCC; do
+      refused "invalid setup code" --image "$ROOT/ok.img" --name pod-test --setup-code "$code"
+    done
+    refused usage: --image "$ROOT/ok.img" --name pod-test --setup-code ""
+
+    # --ssh-key: a bad file on a key-only device means no SSH at all.
+    ssh-keygen -q -t ed25519 -N "" -C one -f "$ROOT/id"
+    ssh-keygen -q -t ed25519 -N "" -C two -f "$ROOT/id2"
+    { cat "$ROOT/id.pub"; echo "# the bench"; echo; cat "$ROOT/id2.pub"; } > "$ROOT/keys.pub"
+    # ssh-keygen -lf passes these, sshd refuses them: a known_hosts line, an option
+    printf 'myhost %s\n' "$(cat "$ROOT/id.pub")" > "$ROOT/known_hosts"
+    printf 'ssh-gw %s\n' "$(cat "$ROOT/id.pub")" > "$ROOT/known_hosts_ssh"
+    printf 'from="10.0.0.0/8" %s\n' "$(cat "$ROOT/id.pub")" > "$ROOT/options.pub"
+    { cat "$ROOT/id.pub"; echo "ssh-ed25519 AAAAtrunc"; } > "$ROOT/half.pub"
+    printf '# no keys yet\n\n' > "$ROOT/empty.pub"
+    ok=(--image "$ROOT/ok.img" --name pod-test)
+    refused usage: "''${ok[@]}" --ssh-key
+    refused usage: "''${ok[@]}" --ssh-key ""
+    refused "--ssh-key $ROOT/missing.pub: no such file" "''${ok[@]}" --ssh-key "$ROOT/missing.pub"
+    refused "line 1 is not a public key" "''${ok[@]}" --ssh-key "$ROOT/id" # the private key
+    refused "line 1 is not a public key" "''${ok[@]}" --ssh-key "$ROOT/ok.img"
+    refused "line 2 is not a public key" "''${ok[@]}" --ssh-key "$ROOT/half.pub"
+    refused "line 1 is not a public key" "''${ok[@]}" --ssh-key "$ROOT/known_hosts"
+    refused "line 1 is not a public key" "''${ok[@]}" --ssh-key "$ROOT/known_hosts_ssh"
+    refused "line 1 is not a public key" "''${ok[@]}" --ssh-key "$ROOT/options.pub"
+    refused "no public key in it" "''${ok[@]}" --ssh-key "$ROOT/empty.pub"
+    # a good file passes its check: the next one refuses
+    refused "not a block device" "''${ok[@]}" --ssh-key "$ROOT/keys.pub" --disk "$ROOT/ok.img"
 
     echo "installer scenarios passed"
     touch $out

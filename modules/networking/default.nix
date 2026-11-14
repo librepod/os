@@ -46,4 +46,7 @@
       addresses = true;
     };
   };
+  # avahi is the only mDNS responder: a second one (resolved, on with networkd)
+  # makes <hostname>.local unreliable. Inert where resolved is off.
+  services.resolved.settings.Resolve.MulticastDNS = false;
 }

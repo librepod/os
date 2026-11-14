@@ -9,13 +9,12 @@
 { pkgs, lib, ... }:
 
 {
-  # ── All 13 modules ──
+  # ── All 12 modules ──
   imports = [
     ../modules/casdoor
     ../modules/common
     ../modules/disko
     ../modules/borgmatic
-    ../modules/frpc
     ../modules/gitolite
     ../modules/gobackup
     ../modules/k3s
@@ -27,13 +26,6 @@
   ];
 
   # ── Option-based modules (need enable flags + required options) ──
-
-  # frpc (enable flag + required string options)
-  librepod.frpc = {
-    enable = true;
-    serverAddr = "127.0.0.1";
-    auth.token = "stub-token";
-  };
 
   # users (required hashedPassword strings)
   librepod.users = {

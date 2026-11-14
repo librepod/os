@@ -1,0 +1,51 @@
+name: Promote
+
+# Marks a candidate (a prerelease that Release (Stable) published) as Latest:
+# devices on stable follow releases/latest/download/.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Candidate to promote, with or without leading v (e.g. 0.2.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    name: Promote candidate
+    runs-on: ubuntu-latest
+    # No checkout, so gh has no repo to infer.
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Mark Latest
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${INPUT_VERSION#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Version must be semver X.Y.Z (got '$INPUT_VERSION')"; exit 1
+          fi
+          info="$(gh release view "v$version" --json isDraft,isPrerelease,assets \
+            --jq '[.isDraft, .isPrerelease, ([.assets[].name] | index("SHA256SUMS.gpg") != null)] | @tsv')"
+          read -r draft prerelease signed <<<"$info"
+          if [ "$draft" != false ]; then
+            echo "::error::v$version is a draft, not a published candidate"; exit 1
+          fi
+          if [ "$prerelease" != true ]; then
+            echo "::error::v$version is not a candidate: it is not a prerelease"; exit 1
+          fi
+          if [ "$signed" != true ]; then
+            echo "::error::v$version has no SHA256SUMS.gpg: devices would refuse it"; exit 1
+          fi
+          latest="$(gh release view --json tagName --jq .tagName || true)"
+          if ! [ "$(printf '%s\n' "$latest" "v$version" | sort -V | tail -n1)" = "v$version" ] \
+             || [ "$latest" = "v$version" ]; then
+            echo "::error::v$version must be greater than the Latest release ${latest:-<none>}"; exit 1
+          fi
+          gh release edit "v$version" --prerelease=false --latest
