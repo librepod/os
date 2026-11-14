@@ -53,12 +53,6 @@
         # k3s's built-in local-storage
         self.nixosModules.nfs
         self.nixosModules.onboarding
-        # The flake updater is gone: a device flake that still sets its option is told why.
-        (nixpkgs.lib.mkRemovedOptionModule [
-          "librepod"
-          "updates"
-          "enable"
-        ] "library devices update by flake pin; see docs/updates.md")
       ];
 
       # The image base stack: no Nix, no flake updater, no disko, no per-device
