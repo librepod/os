@@ -175,6 +175,10 @@ pkgs.runCommand "image-updater-test"
     # tonight without automatic updates
     fresh; offer stable 0.5.1; $U timezone Europe/Minsk; $U install tonight; at Europe/Minsk "2026-11-14 23:00"; $U tick
     expect [ "$(st .state)" = scheduled ]; at Europe/Minsk "2026-11-15 03:00"; $U tick; expect called "update --offline 0.5.1"
+    # tonight with nothing to install: never scheduled, dropped when its window comes
+    fresh; $U timezone Europe/Minsk; $U install tonight; at Europe/Minsk "2026-11-14 23:00"; $U tick
+    expect [ "$(st .state)/$(st .installAt)" = up-to-date/null ]; expect [ -e $D/request ]
+    at Europe/Minsk "2026-11-15 02:10"; $U tick; expect [ ! -e $D/request ]; expect [ "$(st .state)" = up-to-date ]
     # failed list: automatic skips it, the owner's install retries it
     fresh; offer stable 0.5.1; echo 0.5.1 > $D/failed-versions; $U auto on; at UTC "2026-11-15 03:00"; $U tick
     expect not called "update --offline"; expect [ "$(st '.failedVersions[0]')" = 0.5.1 ]

@@ -184,7 +184,7 @@ settle() { # available version or empty
   case $(current_state) in
     done | rolled-back | failed) if [ -z "$v" ] || in_failed "$v" || [ "$v" = "$(failed_download)" ]; then return 0; fi ;;
   esac
-  if wants_night; then
+  if [ -n "$v" ] && wants_night; then # only a version is scheduled; decide drops an empty tonight in the window
     # shellcheck disable=SC2016 # jq variable
     set_status scheduled "installs in the night window" '.installAt = $at' --arg at "$(install_at)"
   elif [ -z "$v" ]; then

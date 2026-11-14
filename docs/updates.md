@@ -91,8 +91,9 @@ owner asks for then, with nothing known to install, is dropped.
 - The night window is 02:00-05:00 in `settings.timezone`; 05:00 is out.
 - A newer version's download replaces an older one. An install takes the
   newest version when it starts, not the one the owner saw.
-- `scheduled` is for the owner's `tonight`, or for any `available` that is not
-  in `failedVersions` while `settings.auto` is on.
+- `scheduled` is for an `available` the owner asked to install `tonight`, or
+  for any `available` that is not in `failedVersions` while `settings.auto` is
+  on. A `tonight` with nothing to install is dropped when the window comes.
 - `done`, `rolled-back` and `failed` stay until the next install starts or a
   check finds a version that is not in `failedVersions`. A check that finds
   nothing new leaves them. An install the owner asked for goes to
