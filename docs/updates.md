@@ -148,6 +148,10 @@ handled (`status.handled`). Raise it for every new answer: the latest action
 wins. Anything else is ignored: not a number, not a whole number from 1, or at
 or below the last one handled.
 
+A rollback restores k3s's datastore, this ConfigMap included, so `settings.json`
+and `install.json` can go back to a lower `rev` or `id` while `status.handled`
+stays higher. The UI numbers its next answer max(its own last, `handled.*`) + 1.
+
 A `rev` or `id` that is above the last but fails validation is rejected, and
 counts as handled:
 
