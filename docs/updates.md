@@ -109,6 +109,9 @@ stays as it was, `detail` says so, and `lastCheck` doesn't move.
   power cut interrupted it before the new version was written (nothing
   changed, and the version is not in the list); k3s's data could not be
   restored; or the record of the install in flight was unreadable.
+- A download that did not finish is tried again at the next check (at boot,
+  every 6 hours, `check`, or a new channel) or when the owner asks to install.
+  Until then the state stays `failed`. A newer version downloads as usual.
 
 ## `settings.json` (UI → device)
 

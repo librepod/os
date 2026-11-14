@@ -59,7 +59,9 @@ in
       serviceConfig = {
         Type = "oneshot";
         ExecStart = "${updater}/bin/librepod-update tick";
-        TimeoutStartSec = "2h"; # a 2 GB download
+        # A 2 GB download on a slow link. systemd-pull aborts a stalled transfer
+        # itself, so this cap is only for hangs.
+        TimeoutStartSec = "12h";
       };
     };
 

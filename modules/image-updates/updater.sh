@@ -29,6 +29,9 @@ available() {
   if [ -n "$v" ] && newer "$v" "$(booted_version)"; then echo "$v"; fi
 }
 downloaded_version() { cat "$DOWNLOADED" 2>/dev/null || true; }
+# A download that failed waits for the next check or the owner's install. In the
+# run dir: every boot checks first.
+failed_download() { cat "$RUN_DIR/download-failed" 2>/dev/null || true; }
 in_failed() { grep -qxF "$1" "$FAILED" 2>/dev/null; } # version
 # Rewritten whole, not appended to: a power cut can't tear the line.
 fail_version() { in_failed "$1" || write_state "$FAILED" "$({ cat "$FAILED" 2>/dev/null || true; echo "$1"; })"; } # version
@@ -61,10 +64,13 @@ stale() {
   [ "$t" -ge 21600 ] || [ "$t" -lt 0 ]
 }
 
-# An install about to be due gets the newest version, so it checks too.
+# An install about to be due gets the newest version, so it checks too; the
+# other checks also try a failed download again.
 check_due() {
-  if [ -e "$CHECK_NOW" ]; then rm -f "$CHECK_NOW"; return 0; fi
-  [ ! -e "$RUN_DIR/checked" ] || stale || install_due
+  if [ -e "$CHECK_NOW" ] || [ ! -e "$RUN_DIR/checked" ] || stale; then
+    rm -f "$CHECK_NOW" "$RUN_DIR/download-failed"; return 0
+  fi
+  install_due
 }
 
 # The newest version the channel offers above the booted one; fails when the
@@ -97,7 +103,7 @@ check() {
 
 download() {
   local v; v=$(available)
-  if [ -z "$v" ] || [ "$v" = "$(downloaded_version)" ]; then return; fi
+  if [ -z "$v" ] || [ "$v" = "$(downloaded_version)" ] || [ "$v" = "$(failed_download)" ]; then return; fi
   # A failed version stays where it is (and a final state with it) until the owner asks.
   if in_failed "$v" && [ -z "$(request)" ]; then return; fi
   set_status downloading "downloading $v"
@@ -107,6 +113,7 @@ download() {
     write_state "$DOWNLOADED" "$v"
   else
     set_status failed "could not download $v"
+    echo "$v" > "$RUN_DIR/download-failed"
     [ "$(request)" != now ] || rm -f "$REQUEST"
   fi
 }
@@ -175,7 +182,7 @@ settle() { # available version or empty
   local v=$1
   [ -z "$UNREACHABLE" ] || return 0
   case $(current_state) in
-    done | rolled-back | failed) if [ -z "$v" ] || in_failed "$v"; then return 0; fi ;;
+    done | rolled-back | failed) if [ -z "$v" ] || in_failed "$v" || [ "$v" = "$(failed_download)" ]; then return 0; fi ;;
   esac
   if wants_night; then
     # shellcheck disable=SC2016 # jq variable
@@ -279,7 +286,7 @@ case "${1:-}" in
     refresh_status; cat "$STATUS" ;;
   install)
     case "${2:-}" in now|tonight) ;; *) usage ;; esac
-    write_state "$REQUEST" "$2"; start_service --no-block ;;
+    write_state "$REQUEST" "$2"; rm -f "$RUN_DIR/download-failed"; start_service --no-block ;;
   channel)
     case "${2:-}" in stable|beta) ;; *) usage ;; esac
     if [ "$2" != "$(setting channel)" ]; then

@@ -188,6 +188,14 @@ pkgs.runCommand "image-updater-test"
     echo '{"state":"rolled-back","available":null,"lastCheck":null,"installAt":null,"detail":"d"}' > $D/status.json
     expect $U tick; expect [ "$(st .state)" = rolled-back ]; expect not called acquire
     $U install now; expect $U tick; expect called "acquire 0.5.1"; expect called "update --offline 0.5.1"
+    # a failed download stays failed, not tried again until a check or the owner's install; a newer version is
+    fresh; offer stable 0.5.1; touch $STUBS/acquire-fails; $U auto on; at UTC "2026-11-15 01:00"; $U tick
+    expect [ "$(st .state)/$(st .detail)" = "failed/could not download 0.5.1" ]
+    : > $CALLS_LOG; $U tick; at UTC "2026-11-15 03:00"; $U tick                     # the window's own check too
+    expect not called acquire; expect [ "$(st .state)/$(st .detail)" = "failed/could not download 0.5.1" ]
+    $U check; $U tick; expect called "acquire 0.5.1"
+    : > $CALLS_LOG; $U install now; $U tick; expect called "acquire 0.5.1"
+    offer stable 0.5.2; : > $CALLS_LOG; $U tick; expect called "acquire 0.5.2"
     # the update's own boot: a stale available is not the booted version's to install
     fresh; booted 0.5.1; touch $STUBS/list-fails
     echo '{"state":"done","available":"0.5.1","lastCheck":null,"installAt":null,"detail":"d"}' > $D/status.json
