@@ -274,7 +274,7 @@ finish() {
   if [ -z "$to" ] || [ "$to" != "$(booted_version)" ] || ! blessed; then return 0; fi
   if in_failed "$to"; then write_state "$FAILED" "$(grep -vxF "$to" "$FAILED" || true)"; fi
   drop_snapshot; rm -f "$DOWNLOADED"
-  set_status "done" "updated to $to" # quoted: shellcheck reads a bare done as the keyword
+  set_status "done" "updated to $to" '.available = null' # quoted: shellcheck reads a bare done as the keyword
   rm -f "$RECORD"; sync "$STATE_DIR"
 }
 

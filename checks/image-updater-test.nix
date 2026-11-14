@@ -148,6 +148,7 @@ pkgs.runCommand "image-updater-test"
     expect [ "$(grep -n 'stop k3s' $CALLS_LOG | cut -d: -f1)" -lt "$(grep -n 'update --offline' $CALLS_LOG | cut -d: -f1)" ]
     expect [ "$(jq -r '.from+" "+.to+" "+.phase' $D/record.json)" = "0.5.0 0.5.2 installed" ]
     expect [ "$(cat $D/k3s-db/state.db)" = before ]; expect [ ! -e $D/request ]
+    booted 0.5.2; $U finish; expect [ "$(st .state)/$(st .available)" = done/null ]   # up to date: nothing available
     # now during a download: one run, one install
     fresh; offer stable 0.5.1; touch $STUBS/press-now-during-acquire; $U tick; expect called "update --offline 0.5.1"
     # now with nothing newer

@@ -51,9 +51,7 @@ gone: `current` carries the version.
 
 - `current`: the booted version, plain `X.Y.Z`.
 - `available`: the newest version on the channel when it is above `current`,
-  else `null`. A device never moves to a lower version. Right after an install
-  it can still equal `current` until the next check: read one that is not
-  above `current` as none.
+  else `null`. A device never moves to a lower version.
 - `downloaded`: `available` is already on the device, so installing is a
   reboot.
 - `state`, `detail`: below. `detail` is for people.
