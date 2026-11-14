@@ -80,8 +80,8 @@ plus per-device identity — used by the small flake an installed device owns at
   outputs = { librepod, ... }: {
     nixosConfigurations.pod-abc123 = librepod.lib.mkDevice {
       name = "pod-abc123";
-      # the tag above, from the lock; the updater reports it as the running version
-      version = (builtins.fromJSON (builtins.readFile ./flake.lock)).nodes.librepod.original.ref;
+      # the tag above, from the lock (master when none); written to /etc/librepod-release
+      version = (builtins.fromJSON (builtins.readFile ./flake.lock)).nodes.librepod.original.ref or "master";
       device = "lenovo-m710q";          # ./hw/<name>
       modules = [
         ./install.nix   # disk layout + stateVersion, frozen on install day
@@ -122,11 +122,25 @@ Without it the device has no SSH until a key is added at the console, to
 `~librepod/.ssh/authorized_keys`; the generic `librepod` / `librepod` login
 works at the console only. A reinstall writes root again, so it needs
 `--ssh-key` again.
-Updates are consent-driven: the Marketplace
-writes intent to ConfigMap `librepod-os/<hostname>` ([contract](docs/updates.md)); the host updater applies
-release tags only (`vX.Y.Z`) and boots the new version once as a trial; the
-old version stays the boot default until the new one passes its health checks. Unattended updates need an
-explicit per-device policy (`policy.unattended` + a nightly window).
+
+### Updates
+
+An **image device** (written by `librepod-install`) updates itself, with k3s
+stopped or broken. It checks its channel, `stable` or `beta` (`stable` until
+set), at boot and at least every 6 hours, and downloads a new version as soon
+as it finds one. It installs when the owner chooses now or tonight, or, with
+automatic updates on, in the night window (02:00-05:00 in the owner's time
+zone). The new version boots with a limited number of tries and must pass its
+health gate; if it fails, the old version boots again and k3s's data is
+restored to what it was before. Over ssh,
+`librepod-update status | check | install now|tonight | channel stable|beta | auto on|off | timezone ZONE`
+does the same. The Marketplace shows the status and passes on the owner's
+answers through a ConfigMap ([contract](docs/updates.md)).
+
+A **library device** (the flake above) has no updater. Bump its pin, to
+`github:librepod/os/vX.Y.Z`, to `github:librepod/os` (master) or to the
+`unstable` tag, then run `nix flake update librepod` and
+`nixos-rebuild switch`.
 
 ## Installation
 
@@ -145,11 +159,11 @@ curl https://raw.githubusercontent.com/librepod/librepod-install/master/librepod
 ## Testing
 
 ```bash
-nix flake check            # eval checks + stubbed updater/sentinel/installer scenarios, formatting
-nix build .#updates-e2e -L # end-to-end OS updates in a QEMU VM
+nix flake check            # eval checks, stubbed installer/onboarding scenarios, the updater, health gate and bridge (image-updater-test, image-health-test, image-bridge-test), formatting
+nix build .#image-e2e -L   # the image installed, booted and updated in a QEMU VM
 ```
 
-`updates-e2e` boots one VM with the real stack (UEFI, systemd-boot, k3s) and runs every update scenario against a generated local release repo: a healthy update, k3s down, power cuts, a build failure, a stage-1 panic and hang, no fetch. It needs x86_64-linux with KVM (`/dev/kvm` writable), takes about an hour, and leaves a ~5 GB disk image in the store (`nix-collect-garbage` frees it). A passing run prints `updates-e2e: all scenarios passed`. Nix caches the result, so add `--rebuild` to run it again on unchanged code. `nix build .#trial-spike -L` covers only the boot-loader mechanics of the trial boot.
+`image-e2e` installs the appliance image on a VM's disks with `librepod-install` and boots it, with the device's identity outside Nix (see `modules/identity`). It also covers the update flow: stable and beta updates, a rollback with k3s's data restored, and a power cut during an install. It takes 45–90 min and needs x86_64-linux with KVM (`/dev/kvm` writable). Nix caches the result, so add `--rebuild` to run it again on unchanged code.
 
 ## Branching & Releases
 
@@ -162,17 +176,20 @@ LibrePod OS uses trunk-based development — there is no `develop` branch.
   librepod.url = "github:librepod/os";  # rolling unstable; flake.lock pins the exact rev
   ```
 
-- **`vX.Y.Z` tags are stable releases**, cut from a `master` commit that has soaked on `unstable`. Cut one via **Actions → Release (Stable) → Run workflow** (enter e.g. `0.2.0`), or manually:
+- **`vX.Y.Z` tags are release candidates**, cut from a `master` commit that has soaked on `unstable`. Cut one via **Actions → Release (Stable) → Run workflow** (enter e.g. `0.2.0`), or manually:
 
   ```bash
   git tag v0.2.0 && git push origin v0.2.0
   ```
 
-  The dispatch path validates semver ordering and tags `master` HEAD; both paths publish a GitHub Release marked **Latest**. Releases don't run `updates-e2e`: run it on the commit first, locally or via **Actions → Updates E2E → Run workflow** (manual only, about an hour). Pin a stable input with `github:librepod/os/vX.Y.Z`.
+  The dispatch path validates semver ordering and tags `master` HEAD. Both paths build every hardware profile's image, sign `SHA256SUMS` and publish a GitHub **prerelease**, never Latest. A candidate higher than what the rolling **`beta`** release holds is also copied to it (the device files and the signed sums only), and devices on the beta channel follow `releases/download/beta/`. A hotfix for an older line never moves `beta` back.
 
   The cluster bootstrap artifact follows the same discipline: `modules/k3s/charts/flux-instance.nix` pins `ref = "vX.Y.Z"` — bumped deliberately like any other input, never tracking `latest`.
+- **Promote** turns a candidate into the stable release: **Actions → Promote → Run workflow** (enter e.g. `0.2.0`). It marks that release **Latest**, with no rebuild and the same signature, and devices on the stable channel follow `releases/latest/download/`. It refuses a version not above the current Latest, a draft, a release that is not a candidate, and one without a signed `SHA256SUMS`. A candidate that fails on beta is never promoted; its fix is the next patch number.
+- **Tags containing `-` are refused** (no `v0.5.0-rc.1`): systemd and `sort -V` order them above their release, so a device on one would never take its stable. Versions are plain `X.Y.Z`.
+- Library devices pin any tag with `github:librepod/os/vX.Y.Z`, promoted or not.
 
-If a dispatch run fails after the tag has already landed (for example the release-publishing step errored), do **not** delete the tag — re-running or re-dispatching will refuse ("Tag vX.Y.Z already exists"). Finish the release by hand: `gh release create vX.Y.Z --generate-notes --latest`.
+If a dispatch run fails after the tag has already landed (for example the release-publishing step errored), do **not** delete the tag — re-dispatching will refuse ("Tag vX.Y.Z already exists"). Use **Re-run failed jobs** on the same run, within 3 days: the built images are kept that long. After that, cut the next patch tag. Don't create the release by hand: without the images and the signed `SHA256SUMS` devices refuse it, and Promote does too.
 
 ## License
 

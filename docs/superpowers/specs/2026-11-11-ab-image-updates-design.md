@@ -558,9 +558,9 @@ install in flight, the failed versions, and the k3s snapshot.
 ### The bridge to the Marketplace (the only kubectl)
 
 A separate unit, after `k3s.service`, every minute. Its failures never touch
-the updater. ConfigMap `marketplace-ui/librepod-os-update` (the namespace of
-the setup-code Secret; the bridge creates both if absent). Each side
-merge-patches only its own keys.
+the updater. ConfigMap `librepod-os/librepod-os-update` (an OS-owned
+namespace, because the OS doesn't hard-code app namespaces; the bridge creates
+both if absent). Each side merge-patches only its own keys.
 
 `status.json` (device → UI; the bridge copies the updater's status on change):
 
@@ -659,7 +659,8 @@ calls the same commands.
 - The night window is 02:00–05:00 local time, fixed.
 - Downloads are automatic in both modes: about 2 GB per release.
 - Before onboarding: stable, automatic updates off, UTC.
-- The ConfigMap lives in `marketplace-ui`, with three keys.
+- The ConfigMap lives in `librepod-os`, an OS-owned namespace (the OS doesn't
+  hard-code app namespaces), with three keys.
 - The health gate includes fetching the channel's signed `SHA256SUMS`.
 - The bridge polls every minute; the updater checks every 6 hours.
 
