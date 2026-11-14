@@ -62,7 +62,7 @@ if [ -n "$SSH_KEY" ]; then
     n=$((n + 1))
     [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
     read -r _ blob _ <<< "$line"
-    [[ "$blob" == AAAA* ]] && ssh-keygen -lf - <<< "$line" >/dev/null 2>&1 \
+    { [[ "$blob" == AAAA* ]] && ssh-keygen -lf - <<< "$line" >/dev/null 2>&1; } \
       || die "--ssh-key $SSH_KEY: line $n is not a public key (key type first, no options)"
     keys=$((keys + 1))
   done < "$SSH_KEY"
