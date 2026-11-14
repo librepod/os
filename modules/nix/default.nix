@@ -2,7 +2,14 @@
 
 {
   nix = {
-    settings.auto-optimise-store = true;
+    settings = {
+      auto-optimise-store = true;
+      # The owner updates with `nix flake update` and `nixos-rebuild switch`.
+      experimental-features = [
+        "nix-command"
+        "flakes"
+      ];
+    };
     gc = {
       automatic = true;
       dates = "weekly";

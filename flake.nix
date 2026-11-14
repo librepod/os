@@ -281,6 +281,13 @@
                   ];
                 };
             in
+            # The owner updates by `nix flake update` (README).
+            assert nixpkgs.lib.all
+              (f: builtins.elem f (mk "lenovo-m710q").config.nix.settings.experimental-features)
+              [
+                "nix-command"
+                "flakes"
+              ];
             pkgs.runCommand "mk-device-eval"
               {
                 # Forces full evaluation of the appliance; result discarded
