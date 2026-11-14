@@ -52,15 +52,17 @@ FIRST=$(img | head -c 520 | tail -c 8 | tr -d '\0')
 LAST=$(img | tail -c 512 | head -c 8 | tr -d '\0')
 [ "$FIRST $LAST" = "EFI PART EFI PART" ] || die "$IMAGE is not a whole disk image (.raw or .raw.zst)"
 # Line by line: ssh-keygen -lf passes a file with one good key, a private key,
-# and known_hosts lines. A line starts with its key type: sshd refuses a
-# known_hosts host field as an option, so options are not accepted either.
+# and known_hosts lines. The key data (base64, always AAAA…) must be the second
+# field, after the key type: sshd reads anything before the type as options and
+# refuses a known_hosts host field there, so options are not accepted either.
 if [ -n "$SSH_KEY" ]; then
   [ -f "$SSH_KEY" ] && [ -r "$SSH_KEY" ] || die "--ssh-key $SSH_KEY: no such file"
   n=0 keys=0
   while IFS= read -r line || [ -n "$line" ]; do
     n=$((n + 1))
     [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
-    [[ "$line" =~ ^[[:space:]]*(ssh-|ecdsa-|sk-) ]] && ssh-keygen -lf - <<< "$line" >/dev/null 2>&1 \
+    read -r _ blob _ <<< "$line"
+    [[ "$blob" == AAAA* ]] && ssh-keygen -lf - <<< "$line" >/dev/null 2>&1 \
       || die "--ssh-key $SSH_KEY: line $n is not a public key (key type first, no options)"
     keys=$((keys + 1))
   done < "$SSH_KEY"
@@ -127,6 +129,7 @@ fi
 echo "==> writing $NAME${SSH_KEY:+, its SSH key}, its data disk and setup code to root"
 MNT=$(mktemp -d)
 mount "$ROOT" "$MNT"
+umask 022 # sshd's StrictModes refuses keys under a group-writable /etc or /etc/ssh
 mkdir -p "$MNT/etc/librepod"
 echo "$NAME" > "$MNT/etc/hostname"
 echo "$DATA_UUID" > "$MNT/etc/librepod/data-partuuid"
@@ -135,7 +138,7 @@ install -d -m 700 "$MNT/var/lib/librepod"
 if [ -n "$SSH_KEY" ]; then
   # Root's, 0644 in a 0755 directory: sshd's StrictModes. No CRs from Windows.
   install -d -m 755 "$MNT/etc/ssh/authorized_keys.d"
-  (umask 022 && tr -d '\r' < "$SSH_KEY" > "$MNT/etc/ssh/authorized_keys.d/librepod")
+  tr -d '\r' < "$SSH_KEY" > "$MNT/etc/ssh/authorized_keys.d/librepod"
 fi
 umount "$MNT"
 
