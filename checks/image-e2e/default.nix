@@ -10,7 +10,12 @@
 # recorded on root. Without its data disk the device still boots, NFS off.
 # It reads a signed release, as CI publishes one, and finds its own profile's
 # version there; the installer writes that release's disk image.
-# Run locally (KVM): nix build .#image-e2e -L
+# Then it updates itself from 0.5.0, as the real units do: from stable with k3s
+# stopped; automatically in the night window, set through the ConfigMap, to a
+# version that fails its health gate and is rolled back with k3s's data
+# restored; never automatically again, but when the owner asks; beta's version
+# only on beta; and after a power cut mid-install, back on the old version.
+# Run locally (KVM, about an hour and a half): nix build .#image-e2e -L
 { self, nixpkgs }:
 let
   hostPkgs = nixpkgs.legacyPackages.x86_64-linux;
@@ -53,17 +58,21 @@ let
         gpg --export > $out/release.pgp
         rm -f $out/home/S.*
       '';
-  release =
-    pod:
-    hostPkgs.runCommand "image-e2e-release" { nativeBuildInputs = [ hostPkgs.gnupg ]; } ''
-      mkdir $out && cd $out
-      cp ${pod.system.build.releaseFiles}/* .
-      sha256sum -- * > SHA256SUMS
-      export GNUPGHOME=$(mktemp -d)
-      cp -r ${releaseKey}/home/. $GNUPGHOME && chmod -R u+w $GNUPGHOME
-      gpg --batch --detach-sign --output SHA256SUMS.gpg SHA256SUMS
-      gpgv --keyring ${releaseKey}/release.pgp SHA256SUMS.gpg SHA256SUMS
-    '';
+  # A channel's folder holds one version (GitHub's latest/download, or beta):
+  # the device files only, as the beta copy holds them.
+  repo =
+    c:
+    hostPkgs.runCommand "image-e2e-repo-${c.system.image.version}"
+      { nativeBuildInputs = [ hostPkgs.gnupg ]; }
+      ''
+        mkdir $out && cd $out
+        ln -s ${c.system.build.releaseFiles}/*.efi ${c.system.build.releaseFiles}/*.store.raw.zst .
+        sha256sum -- * > SHA256SUMS
+        export GNUPGHOME=$(mktemp -d)
+        cp -r ${releaseKey}/home/. $GNUPGHOME && chmod -R u+w $GNUPGHOME
+        gpg --batch --detach-sign --output SHA256SUMS.gpg SHA256SUMS
+        gpgv --keyring ${releaseKey}/release.pgp SHA256SUMS.gpg SHA256SUMS
+      '';
   # Another LibrePod's data disk, plugged in next to ours.
   otherDataDisk = gptDisk "otherdata" "9a4f1c2e-6b7d-4e8f-a1b2-c3d4e5f60718" [
     {
@@ -93,6 +102,8 @@ let
 in
 hostPkgs.testers.runNixOSTest {
   name = "image-e2e";
+  # The default hour isn't enough with the update scenarios' ten-odd boots.
+  globalTimeout = 3 * 3600;
   # The k3s overlay in imageModules
   node.pkgsReadOnly = false;
 
@@ -119,26 +130,31 @@ hostPkgs.testers.runNixOSTest {
       ];
     };
 
-  nodes.server =
-    { nodes, ... }:
-    {
-      networking.firewall.enable = false;
-      services.nginx = {
-        enable = true;
-        virtualHosts.server.root = release nodes.pod;
-      };
+  # One folder per channel: the test points stable and beta at a version's repo.
+  nodes.server = {
+    networking.firewall.enable = false;
+    services.nginx = {
+      enable = true;
+      virtualHosts.server.root = "/srv/updates";
     };
+  };
 
   nodes.pod =
-    { pkgs, ... }:
+    { pkgs, extendModules, ... }:
     {
       imports = self.lib.imageModules;
-      system.image.version = "1";
+      system.image.version = lib.mkDefault "0.5.0";
       librepod.image = {
-        updateUrl = "http://server/";
+        updateUrl = "http://server/stable/";
+        betaUrl = "http://server/beta/";
         pubring = "${releaseKey}/release.pgp";
         profile = "vm";
       };
+      systemd.services.librepod-update.environment.LIBREPOD_TEST_HOLD = "/run/librepod-test-hold";
+      # A later version of this device, test backdoor and all.
+      system.build.release =
+        version: modules:
+        (extendModules { modules = [ { system.image.version = version; } ] ++ modules; }).config;
 
       # VM hardware: a hw profile's job on a device. The M90q's storage
       # drivers too, so the extra drives are there while root mounts.
@@ -206,6 +222,26 @@ hostPkgs.testers.runNixOSTest {
     { nodes, ... }:
     let
       m = nodes.pod;
+      # 0.5.2 changes k3s's data, then fails its health gate.
+      unhealthy =
+        { pkgs, ... }:
+        {
+          librepod.image.healthCheck = lib.mkForce (
+            toString (
+              pkgs.writeShellScript "image-e2e-unhealthy" ''
+                until ${pkgs.k3s}/bin/k3s kubectl wait --for=condition=Ready nodes --all --timeout=10s; do sleep 5; done
+                ${pkgs.k3s}/bin/k3s kubectl create configmap made-by-0-5-2 || true
+                exit 1
+              ''
+            )
+          );
+        };
+      releases = {
+        "0.5.0" = m;
+        "0.5.1" = m.system.build.release "0.5.1" [ ];
+        "0.5.2" = m.system.build.release "0.5.2" [ unhealthy ];
+        "0.5.3" = m.system.build.release "0.5.3" [ ];
+      };
     in
     ''
       import json, os, subprocess, tempfile, time
@@ -220,17 +256,37 @@ hostPkgs.testers.runNixOSTest {
                   raise Exception(f"wanted {n} boots, saw {boots()}")
               time.sleep(5)
 
-      def reconnect(timeout=300):
+      def reconnect(timeout=300):  # to the shell of the last boot
+          # Every boot's backdoor announces itself on the one shell socket, and
+          # connect() stops at the first: after a few boots, one that's gone. So
+          # once this boot's is up, drop them all and check the shell answers.
           deadline = time.time() + timeout
-          time.sleep(10)
           while time.time() < deadline:
-              try:
-                  pod.connected = False
-                  pod.succeed("true")
-                  return
-              except (BrokenPipeError, ValueError):
-                  time.sleep(5)
+              if "connecting to host..." in pod.get_console_log().split("Linux version")[-1]:
+                  time.sleep(2)  # its announcement follows at once
+                  shell = pod.shell
+                  assert shell
+                  shell.setblocking(False)
+                  try:
+                      while shell.recv(4096):
+                          pass
+                  except BlockingIOError:
+                      pass
+                  finally:
+                      shell.setblocking(True)
+                  pod.connected = True
+                  try:
+                      pod.succeed("true")
+                      return
+                  except (BrokenPipeError, ValueError):
+                      pass  # garbled by output still arriving: drop it, try again
+              time.sleep(5)
           raise Exception("shell did not come back within timeout")
+
+      def up_after(n, timeout=900):  # the shell of the n-th boot
+          wait_boots(n, timeout)
+          reconnect()
+          pod.wait_for_unit("multi-user.target")
 
       def reboot_and_wait():
           n = boots() + 1
@@ -238,9 +294,7 @@ hostPkgs.testers.runNixOSTest {
               pod.execute("systemctl reboot", check_return=False, timeout=30)
           except (BrokenPipeError, ValueError):
               pass
-          wait_boots(n)
-          reconnect()
-          pod.wait_for_unit("multi-user.target")
+          up_after(n)
 
       disks = []
       def disk(backing=None, size=None):  # size: the backing file's, or 1G blank
@@ -264,7 +318,7 @@ hostPkgs.testers.runNixOSTest {
       def dev(serial):  # kernel path of the disk with this serial
           return installer.succeed(f"lsblk -dnpo PATH,SERIAL | awk '$2==\"{serial}\" {{print $1}}'").strip()
       os_, data = dev("os"), dev("data")
-      inst = "librepod-install --image ${release m}/librepod-vm_1.raw.zst --name pod-image --disk {disk} --data-disk {data} {flags}"
+      inst = "librepod-install --image ${m.system.build.releaseFiles}/librepod-vm_0.5.0.raw.zst --name pod-image --disk {disk} --data-disk {data} {flags}"
 
       with subtest("refusals: USB, mounted, a partition, held by device-mapper"):
           installer.fail(inst.format(disk=os_, data=dev("usb"), flags=""))
@@ -288,6 +342,12 @@ hostPkgs.testers.runNixOSTest {
           # a reinstall keeps the sticker's code, typed as printed or not
           installer.succeed(inst.format(disk=os_, data=data, flags=f"--keep-data --setup-code {code.lower()}"))
       installer.shutdown()
+
+      def serve(channel, repo):
+          server.succeed(f"ln -sfn {repo} /srv/updates/{channel}")
+      server.succeed("mkdir -p /srv/updates")
+      serve("stable", "${repo releases."0.5.0"}")
+      serve("beta", "${repo releases."0.5.3"}")
 
       os.environ["NIX_DISK_IMAGE"] = os.environ["OS_DISK"]
       os.environ["EXTRA_DISK"] = disk()
@@ -317,6 +377,13 @@ hostPkgs.testers.runNixOSTest {
           assert disk_of("/mnt/k3s") == "data", disk_of("/mnt/k3s")
           # a fixed /dev/nvme0n1 name would have found the blank extra NVMe
           assert pod.succeed("lsblk -dno NAME,SERIAL | grep -w extra").startswith("nvme0n1")
+
+      def wait_ready():
+          pod.wait_until_succeeds(
+              "k3s kubectl get node pod-image -o json"
+              " | jq -e '.status.conditions[] | select(.type==\"Ready\") | .status==\"True\"'",
+              timeout=600,
+          )
 
       with subtest("hostname comes from /etc/hostname"):
           assert pod.succeed("hostname").strip() == "pod-image", pod.succeed("hostname")
@@ -362,17 +429,13 @@ hostPkgs.testers.runNixOSTest {
 
       with subtest("the published release: signed, this profile's files, this version"):
           server.wait_for_unit("nginx.service")
-          out = pod.succeed("systemd-sysupdate --json=short list 1")
+          out = pod.succeed("systemd-sysupdate --json=short list 0.5.0")
           v = json.loads(out)
           assert v["installed"] and v["available"], v
 
       with subtest("the k3s node is named after the device"):
           pod.wait_for_unit("k3s.service", timeout=600)
-          pod.wait_until_succeeds(
-              "k3s kubectl get node pod-image -o json"
-              " | jq -e '.status.conditions[] | select(.type==\"Ready\") | .status==\"True\"'",
-              timeout=600,
-          )
+          wait_ready()
           assert pod.succeed("k3s kubectl get nodes -o name").split() == ["node/pod-image"]
 
       with subtest("the sticker's setup code reaches marketplace-ui"):
@@ -409,7 +472,125 @@ hostPkgs.testers.runNixOSTest {
           pod.fail("findmnt /exports/k3s")
           pod.fail("systemctl is-active nfs-server.service")
 
+      # ---- updates, through the real units ------------------------------------
+      def version():
+          return pod.succeed(". /etc/os-release; echo $IMAGE_VERSION").strip()
+
+      def status():
+          return json.loads(pod.succeed("librepod-update status"))
+
+      def wait_status(cond, timeout=900):  # cond: jq, on the updater's status
+          pod.wait_until_succeeds(f"librepod-update status | jq -e '{cond}'", timeout=timeout)
+          return status()
+
+      def wait_published(cond):  # the bridge's copy in the ConfigMap, within 2 min
+          pod.wait_until_succeeds("k3s kubectl -n librepod-os get configmap librepod-os-update -o json"
+                                  f" | jq -e '.data[\"status.json\"] | fromjson | {cond}'", timeout=120)
+
+      def answer(key, value):  # what the Marketplace writes
+          patch = json.dumps({"data": {key: json.dumps(value)}})
+          pod.wait_until_succeeds("k3s kubectl -n librepod-os patch configmap librepod-os-update"
+                                  f" --type merge -p '{patch}'", timeout=300)
+
+      def installed():  # versions in the slots, a downloaded one too
+          return json.loads(pod.succeed("systemd-sysupdate --offline --json=short list"))["all"]
+
+      def window_zone():  # Etc/GMT-3 is UTC+3: the zone where the VM's clock reads 03:xx
+          o = 3 - int(pod.succeed("date -u +%H"))
+          if o < -12:
+              o += 24
+          return f"Etc/GMT{-o:+d}"
+
+      def local_hour(zone):
+          return int(pod.succeed(f"TZ={zone} date +%H"))
+
+      with subtest("stable offers 0.5.1: downloaded and installed with k3s stopped, booted, blessed"):
+          serve("stable", "${repo releases."0.5.1"}")
+          pod.succeed("systemctl stop k3s")
+          s = json.loads(pod.succeed("librepod-update check"))
+          assert s["available"] == "0.5.1" and s["downloaded"], s
+          n = boots() + 1
+          pod.succeed("librepod-update install now")
+          up_after(n)
+          assert version() == "0.5.1"
+          wait_ready()
+          wait_status('.state == "done"')
+          assert pod.succeed("/run/current-system/systemd/lib/systemd/systemd-bless-boot status").strip() == "good"
+          pod.fail("test -e /var/lib/librepod/updates/k3s-db")
+
+      with subtest("automatic in the night window, set through the ConfigMap: 0.5.2 fails, 0.5.1 is back with its k3s data"):
+          pod.succeed("k3s kubectl create configmap made-by-0-5-1")
+          serve("stable", "${repo releases."0.5.2"}")
+          pod.succeed("librepod-update check")  # stands in for the 6-hourly check
+          zone = window_zone()
+          assert local_hour(zone) == 3, (zone, local_hour(zone))
+          n = boots() + 3  # the install, then 0.5.2's two tries
+          answer("settings.json", {"rev": 1, "channel": "stable", "auto": True, "timezone": zone})
+          try:
+              wait_status(f'.settings.auto and .settings.timezone == "{zone}"', timeout=300)
+              # the timer's next run, without waiting up to 20 min for it
+              pod.execute("systemctl start --no-block librepod-update.service", check_return=False, timeout=30)
+          except (BrokenPipeError, ValueError):
+              pass  # the tick that `auto on` started saw the window first, and rebooted into the install
+          up_after(n, timeout=1800)
+          assert version() == "0.5.1"
+          s = wait_status('.state == "rolled-back"')
+          assert s["failedVersions"] == ["0.5.2"], s
+          assert "0.5.2" not in installed(), installed()  # vacuumed, so a retry downloads it again
+          wait_ready()
+          wait_published('.state == "rolled-back"')
+          # k3s's data from before 0.5.2: what it made is gone
+          pod.fail("k3s kubectl get configmap made-by-0-5-2")
+          pod.succeed("k3s kubectl get configmap made-by-0-5-1")
+
+      with subtest("not again automatically; the owner's install now retries it"):
+          assert 2 <= local_hour(zone) < 5, local_hour(zone)  # still the night window, automatic on
+          pod.succeed("systemctl start librepod-update.service")
+          pod.fail("test -e /var/lib/librepod/updates/record.json")
+          s = status()
+          assert s["state"] == "rolled-back" and not s["downloaded"], s
+          n = boots() + 3  # downloaded again, installed, 0.5.2's two tries
+          answer("install.json", {"id": 1, "when": "now"})
+          up_after(n, timeout=1800)
+          assert version() == "0.5.1"
+          s = wait_status('.state == "rolled-back"')
+          assert s["failedVersions"] == ["0.5.2"], s
+          assert "0.5.2" not in installed(), installed()
+
+      with subtest("beta offers 0.5.3; stable doesn't, with beta's download in the slot"):
+          pod.succeed("librepod-update auto off")
+          pod.succeed("librepod-update channel beta")
+          wait_status('.settings.channel == "beta" and .available == "0.5.3" and .downloaded')
+          pod.succeed("librepod-update channel stable")
+          # 0.5.2 failed here, so nothing downloads and 0.5.3 stays until the next download's vacuum
+          wait_status('.settings.channel == "stable" and .available == "0.5.2" and (.downloaded | not)')
+          assert "0.5.3" in installed(), installed()
+
+      with subtest("a power cut after the snapshot: 0.5.1 again, interrupted, not failed; then it installs"):
+          pod.succeed("librepod-update channel beta")
+          wait_status('.available == "0.5.3" and .downloaded')
+          # the download left from before went first, never installed
+          pod.succeed("journalctl -b -u librepod-update.service -o cat | grep -F 'Removing old pending'")
+          pod.succeed("touch /run/librepod-test-hold")
+          pod.succeed("librepod-update install now")
+          pod.wait_for_file("/run/librepod-test-hold.held", timeout=600)
+          pod.crash()
+          pod.start(allow_reboot=True)
+          pod.wait_for_unit("multi-user.target")
+          assert version() == "0.5.1"
+          s = wait_status('.state == "failed"', timeout=300)
+          assert "interrupted" in s["detail"] and "0.5.3" not in s["failedVersions"], s
+          # what fallback no longer asks: sysupdate 260 counts the download as installed
+          print("image-e2e: after the cut, systemd-sysupdate pending:", pod.execute("systemd-sysupdate pending 2>&1"))
+          wait_ready()
+          n = boots() + 1
+          pod.succeed("librepod-update install now")
+          up_after(n)
+          assert version() == "0.5.3"
+          wait_status('.state == "done"')
+
       used = os.stat("${m.system.build.image}/${m.image.baseName}.store.raw").st_blocks * 512
       print(f"image-e2e numbers: store slot {used / 2**20:.0f} MiB used of ${m.librepod.image.slotSize}")
+      print("image-e2e: all scenarios passed")
     '';
 }

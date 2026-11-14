@@ -125,6 +125,7 @@ in
       timerConfig = {
         OnBootSec = "1min";
         OnUnitActiveSec = "1min";
+        AccuracySec = "10s"; # the default 1 min makes "every minute" every 1–2 min
       };
     };
   };
