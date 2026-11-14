@@ -51,14 +51,17 @@ img() { zstd -dcf -- "$IMAGE" 2>/dev/null || true; } # || true: SIGPIPE from hea
 FIRST=$(img | head -c 520 | tail -c 8 | tr -d '\0')
 LAST=$(img | tail -c 512 | head -c 8 | tr -d '\0')
 [ "$FIRST $LAST" = "EFI PART EFI PART" ] || die "$IMAGE is not a whole disk image (.raw or .raw.zst)"
-# Line by line: ssh-keygen -lf passes a file with one good key, or a private key.
+# Line by line: ssh-keygen -lf passes a file with one good key, a private key,
+# and known_hosts lines. A line starts with its key type: sshd refuses a
+# known_hosts host field as an option, so options are not accepted either.
 if [ -n "$SSH_KEY" ]; then
   [ -f "$SSH_KEY" ] && [ -r "$SSH_KEY" ] || die "--ssh-key $SSH_KEY: no such file"
   n=0 keys=0
   while IFS= read -r line || [ -n "$line" ]; do
     n=$((n + 1))
     [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
-    ssh-keygen -lf - <<< "$line" >/dev/null 2>&1 || die "--ssh-key $SSH_KEY: line $n is not a public key"
+    [[ "$line" =~ ^[[:space:]]*(ssh-|ecdsa-|sk-) ]] && ssh-keygen -lf - <<< "$line" >/dev/null 2>&1 \
+      || die "--ssh-key $SSH_KEY: line $n is not a public key (key type first, no options)"
     keys=$((keys + 1))
   done < "$SSH_KEY"
   [ "$keys" -gt 0 ] || die "--ssh-key $SSH_KEY: no public key in it"

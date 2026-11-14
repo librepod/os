@@ -56,7 +56,10 @@ pkgs.runCommand "installer-test"
     # --ssh-key: a bad file on a key-only device means no SSH at all.
     ssh-keygen -q -t ed25519 -N "" -C one -f "$ROOT/id"
     ssh-keygen -q -t ed25519 -N "" -C two -f "$ROOT/id2"
-    { cat "$ROOT/id.pub"; echo "# the bench"; echo; printf 'from="10.0.0.0/8" '; cat "$ROOT/id2.pub"; } > "$ROOT/keys.pub"
+    { cat "$ROOT/id.pub"; echo "# the bench"; echo; cat "$ROOT/id2.pub"; } > "$ROOT/keys.pub"
+    # ssh-keygen -lf passes these, sshd refuses them: a known_hosts line, an option
+    printf 'myhost %s\n' "$(cat "$ROOT/id.pub")" > "$ROOT/known_hosts"
+    printf 'from="10.0.0.0/8" %s\n' "$(cat "$ROOT/id.pub")" > "$ROOT/options.pub"
     { cat "$ROOT/id.pub"; echo "ssh-ed25519 AAAAtrunc"; } > "$ROOT/half.pub"
     printf '# no keys yet\n\n' > "$ROOT/empty.pub"
     ok=(--image "$ROOT/ok.img" --name pod-test)
@@ -66,6 +69,8 @@ pkgs.runCommand "installer-test"
     refused "line 1 is not a public key" "''${ok[@]}" --ssh-key "$ROOT/id" # the private key
     refused "line 1 is not a public key" "''${ok[@]}" --ssh-key "$ROOT/ok.img"
     refused "line 2 is not a public key" "''${ok[@]}" --ssh-key "$ROOT/half.pub"
+    refused "line 1 is not a public key" "''${ok[@]}" --ssh-key "$ROOT/known_hosts"
+    refused "line 1 is not a public key" "''${ok[@]}" --ssh-key "$ROOT/options.pub"
     refused "no public key in it" "''${ok[@]}" --ssh-key "$ROOT/empty.pub"
     # a good file passes its check: the next one refuses
     refused "not a block device" "''${ok[@]}" --ssh-key "$ROOT/keys.pub" --disk "$ROOT/ok.img"

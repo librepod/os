@@ -117,7 +117,7 @@ reaches the Marketplace on every boot (`onboarding` module). Without the sticker
 `journalctl -u librepod-setup-code -o cat` on the device shows the code, its
 link and the link as a QR code.
 SSH takes public keys only, as `librepod`: `--ssh-key FILE` (one or more
-public keys) puts them in `/etc/ssh/authorized_keys.d/librepod` on the device.
+public keys, one per line as in a `.pub` file, no options) puts them in `/etc/ssh/authorized_keys.d/librepod` on the device.
 Without it the device has no SSH until a key is added at the console, to
 `~librepod/.ssh/authorized_keys`; the generic `librepod` / `librepod` login
 works at the console only. A reinstall writes root again, so it needs
