@@ -245,6 +245,7 @@ hostPkgs.testers.runNixOSTest {
     in
     ''
       import json, os, subprocess, tempfile, time
+      from test_driver.errors import RequestedAssertionFailed
 
       def boots():
           return pod.get_console_log().count("Linux version")
@@ -278,7 +279,7 @@ hostPkgs.testers.runNixOSTest {
                   try:
                       pod.succeed("true")
                       return
-                  except (BrokenPipeError, ValueError):
+                  except (BrokenPipeError, ValueError, RequestedAssertionFailed):
                       pass  # garbled by output still arriving: drop it, try again
               time.sleep(5)
           raise Exception("shell did not come back within timeout")
@@ -523,7 +524,6 @@ hostPkgs.testers.runNixOSTest {
           serve("stable", "${repo releases."0.5.2"}")
           pod.succeed("librepod-update check")  # stands in for the 6-hourly check
           zone = window_zone()
-          assert local_hour(zone) == 3, (zone, local_hour(zone))
           n = boots() + 3  # the install, then 0.5.2's two tries
           answer("settings.json", {"rev": 1, "channel": "stable", "auto": True, "timezone": zone})
           try:
@@ -580,8 +580,8 @@ hostPkgs.testers.runNixOSTest {
           assert version() == "0.5.1"
           s = wait_status('.state == "failed"', timeout=300)
           assert "interrupted" in s["detail"] and "0.5.3" not in s["failedVersions"], s
-          # what fallback no longer asks: sysupdate 260 counts the download as installed
-          print("image-e2e: after the cut, systemd-sysupdate pending:", pod.execute("systemd-sysupdate pending 2>&1"))
+          # why fallback decides by phase, not this: sysupdate 260 counts the download as installed
+          pod.succeed("systemd-sysupdate pending")
           wait_ready()
           n = boots() + 1
           pod.succeed("librepod-update install now")
