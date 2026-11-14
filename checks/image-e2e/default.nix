@@ -2,9 +2,10 @@
 # k3s included, to an OS disk and a recycled data disk; it refuses USB, mounted
 # and partition targets, and existing LibrePod data unless told --keep-data.
 # The installed disk boots by its UEFI entry with root grown to the disk, and
-# keeps its identity outside Nix: the hostname comes from /etc/hostname, the
-# generic login is console-only until a key is added, and a changed password,
-# the host key and machine-id survive a reboot. Extra NVMe, SATA and USB
+# keeps its identity outside Nix: the hostname comes from /etc/hostname, SSH
+# takes only the key the installer wrote, the generic login works at the
+# console only, and the key, a changed password, the host key and machine-id
+# survive a reboot. Extra NVMe, SATA and USB
 # drives, another LibrePod's data disk and a copy of the image among them,
 # change nothing: the OS disk is the one booted from, the data disk the one
 # recorded on root. Without its data disk the device still boots, NFS off.
@@ -21,6 +22,7 @@ let
   hostPkgs = nixpkgs.legacyPackages.x86_64-linux;
   inherit (nixpkgs) lib;
   sshKeys = import "${nixpkgs}/nixos/tests/ssh-keys.nix" hostPkgs;
+  sshPub = hostPkgs.writeText "librepod.pub" sshKeys.snakeOilPublicKey;
 
   # A GPT disk built the way image.repart builds the OS disk.
   gptDisk =
@@ -341,7 +343,7 @@ hostPkgs.testers.runNixOSTest {
           out = installer.fail(inst.format(disk=os_, data=data, flags="") + " 2>&1")
           assert "--keep-data" in out and "--wipe-data" in out, out
           # a reinstall keeps the sticker's code, typed as printed or not
-          installer.succeed(inst.format(disk=os_, data=data, flags=f"--keep-data --setup-code {code.lower()}"))
+          installer.succeed(inst.format(disk=os_, data=data, flags=f"--keep-data --setup-code {code.lower()} --ssh-key ${sshPub}"))
       installer.shutdown()
 
       def serve(channel, repo):
@@ -358,7 +360,17 @@ hostPkgs.testers.runNixOSTest {
       pod.start(allow_reboot=True)
       pod.wait_for_unit("multi-user.target")
 
-      ssh = "sshpass -p {pw} ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {opts} librepod@localhost true"
+      # The client's key; nothing is set up for librepod on the pod.
+      key = open("${sshKeys.snakeOilPrivateKey}").read()
+      pod.succeed(f"umask 077; cat > /root/key <<'EOF'\n{key}EOF")
+      opts = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+      by_key = f"ssh -o BatchMode=yes {opts} -i /root/key {{user}}@localhost true"
+      by_pw = f"sshpass -p {{pw}} ssh {opts} -o PubkeyAuthentication=no librepod@localhost true 2>&1"
+
+      def password_refused(pw):
+          # publickey is the only method offered: no password prompt at all
+          out = pod.fail(by_pw.format(pw=pw))
+          assert "Permission denied (publickey)" in out, out
 
       def disk_of(path):
           # serial of the disk holding the file system mounted at path
@@ -389,24 +401,17 @@ hostPkgs.testers.runNixOSTest {
       with subtest("hostname comes from /etc/hostname"):
           assert pod.succeed("hostname").strip() == "pod-image", pod.succeed("hostname")
 
-      with subtest("the generic login: console only until a key is added; root locked"):
+      with subtest("SSH: the installed key only; root locked"):
           assert pod.succeed("getent shadow root | cut -d: -f2").startswith("!")
+          assert pod.succeed("stat -c '%a %U' /etc/ssh/authorized_keys.d/librepod").strip() == "644 root"
+          assert pod.succeed("stat -c '%a %U' /etc/ssh/authorized_keys.d").strip() == "755 root"
           pod.wait_for_unit("sshd.service")
-          pod.fail(ssh.format(pw="librepod", opts="-o PubkeyAuthentication=no"))
-          # a power user adds a key
-          key = open("${sshKeys.snakeOilPrivateKey}").read()
-          pod.succeed(f"umask 077; cat > /root/key <<'EOF'\n{key}EOF")
-          pod.succeed(
-              "install -d -m 700 -o librepod -g users ~librepod/.ssh",
-              "echo '${sshKeys.snakeOilPublicKey}' > ~librepod/.ssh/authorized_keys",
-              "chown librepod:users ~librepod/.ssh/authorized_keys",
-              "chmod 600 ~librepod/.ssh/authorized_keys",
-          )
-          pod.succeed(ssh.format(pw="librepod", opts="-i /root/key"))
+          pod.succeed(by_key.format(user="librepod"))
           # and can copy files: scp needs sshd's sftp subsystem
-          pod.succeed("sshpass -p librepod scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-                      " -i /root/key librepod@localhost:/etc/hostname /tmp/copy")
+          pod.succeed(f"scp {opts} -o BatchMode=yes -i /root/key librepod@localhost:/etc/hostname /tmp/copy")
           assert pod.succeed("cat /tmp/copy").strip() == "pod-image"
+          pod.fail(by_key.format(user="root"))
+          password_refused("librepod")
 
       with subtest("extra NVMe, SATA and USB drives change nothing"):
           check_drives()
@@ -458,8 +463,20 @@ hostPkgs.testers.runNixOSTest {
           assert pod.succeed("hostname").strip() == "pod-image"
           check_drives()
           pod.wait_for_unit("sshd.service")
-          pod.succeed(ssh.format(pw="new-pw", opts="-i /root/key"))
-          pod.fail(ssh.format(pw="librepod", opts="-i /root/key"))
+          # the key survived first-boot /etc activation and a reboot
+          pod.succeed(by_key.format(user="librepod"))
+          password_refused("new-pw")
+
+      with subtest("without a key: no SSH, the console login works"):
+          pod.succeed("rm /etc/ssh/authorized_keys.d/librepod")  # as installed without --ssh-key
+          pod.fail(by_key.format(user="librepod"))
+          pod.wait_for_unit("getty@tty1.service")
+          pod.wait_until_tty_matches("1", "login: ")
+          pod.send_chars("librepod\n")
+          pod.wait_until_tty_matches("1", "Password: ")
+          pod.send_chars("new-pw\n")
+          # logged in: librepod's shell runs (it opens zsh's new-user menu, so type nothing)
+          pod.wait_until_succeeds("pgrep -u librepod zsh", timeout=60)
 
       with subtest("a missing data disk doesn't stop boot; NFS stays off"):
           pod.shutdown()

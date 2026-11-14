@@ -168,6 +168,10 @@ password hashes (`hashedPasswordFile`), SSH keys
   `AuthenticationMethods publickey password` lists alternatives. Image
   devices override it with `publickey,password`, so the generic password is a
   console-only login. The fleet's `modules/ssh` is unchanged.
+- 2026-11-13 (8ss.14): superseded. Image devices take SSH keys only
+  (`publickey`); `librepod-install --ssh-key FILE` writes
+  `/etc/ssh/authorized_keys.d/librepod`; the generic password stays
+  console-only.
 - The k3s node is named from `/etc/hostname` and reaches Ready offline.
 - Extra drives (blank NVMe, a SATA disk with generic `esp`/`root` labels, a
   USB stick) change nothing: root, ESP and store mount from the OS disk, PVs

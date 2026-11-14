@@ -43,7 +43,7 @@ nix fmt -- --ci
 
 A device is `lib.mkDevice { name, version, device, modules }`: the shared base stack (`applianceModules` in `flake.nix`), plus a hardware profile from `hw/<name>/` (boot loader, kernel, hardware facts) or any module path, plus the device's own modules (install-day facts like the disk layout and `stateVersion`, then identity). The device flake in `/etc/nixos` calls it. Nothing on the device updates it: the owner bumps the flake's `librepod` pin (`github:librepod/os/vX.Y.Z`, master or the `unstable` tag) and runs `nixos-rebuild switch`.
 
-An image device is `lib.mkImage { device, version, modules }`: `imageModules` (the base stack without Nix, the flake updater, disko or per-device users; it includes `modules/image-updates`, the image's own updater) plus the same hardware profile, built as one A/B disk image by `modules/image`. Nothing per-device is in it; `modules/identity` lists what each device keeps outside the image. `librepod-install` (`pkgs/librepod-install`) writes the image to a device's OS disk, with its name and data disk on root, and registers the boot entry.
+An image device is `lib.mkImage { device, version, modules }`: `imageModules` (the base stack without Nix, the flake updater, disko or per-device users; it includes `modules/image-updates`, the image's own updater) plus the same hardware profile, built as one A/B disk image by `modules/image`. Nothing per-device is in it; `modules/identity` lists what each device keeps outside the image. `librepod-install` (`pkgs/librepod-install`) writes the image to a device's OS disk, with its name, data disk and optional SSH keys on root, and registers the boot entry.
 
 ## Nix Style
 

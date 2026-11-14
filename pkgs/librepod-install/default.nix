@@ -8,6 +8,7 @@
   efibootmgr,
   gnugrep,
   gawk,
+  openssh,
   systemd,
 }:
 
@@ -22,6 +23,7 @@ writeShellApplication {
     efibootmgr
     gnugrep
     gawk
+    openssh # ssh-keygen
     systemd # udevadm
   ];
   text = builtins.readFile ./install.sh;

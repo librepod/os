@@ -9,11 +9,13 @@ usage() {
   echo "usage: librepod-install --image FILE --name NAME [--disk /dev/nvme0n1]"
   echo "                        [--data-disk /dev/sda] [--keep-data | --wipe-data]"
   echo "                        [--setup-code XXXX-XXXX-XXXX]  (keep a printed sticker's)"
+  echo "                        [--ssh-key FILE]  (public keys for SSH as librepod, the only"
+  echo "                                           SSH login; a reinstall needs it again)"
   exit 1
 }
 die() { echo "$*" >&2; exit 1; }
 
-IMAGE="" NAME="" DISK="/dev/nvme0n1" DATA_DISK="/dev/sda" DATA="" SETUP_CODE=""
+IMAGE="" NAME="" DISK="/dev/nvme0n1" DATA_DISK="/dev/sda" DATA="" SETUP_CODE="" SSH_KEY=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --image) [ $# -ge 2 ] || usage; IMAGE="$2"; shift 2;;
@@ -22,6 +24,7 @@ while [ $# -gt 0 ]; do
     --data-disk) [ $# -ge 2 ] || usage; DATA_DISK="$2"; shift 2;;
     # Empty would mean "mint one": an unset variable must not orphan a sticker.
     --setup-code) [ $# -ge 2 ] && [ -n "$2" ] || usage; SETUP_CODE="$2"; shift 2;;
+    --ssh-key) [ $# -ge 2 ] && [ -n "$2" ] || usage; SSH_KEY="$2"; shift 2;;
     --keep-data|--wipe-data) [ -z "$DATA" ] || die "pass --keep-data or --wipe-data, not both"; DATA="${1#--}"; shift;;
     *) usage;;
   esac
@@ -48,6 +51,23 @@ img() { zstd -dcf -- "$IMAGE" 2>/dev/null || true; } # || true: SIGPIPE from hea
 FIRST=$(img | head -c 520 | tail -c 8 | tr -d '\0')
 LAST=$(img | tail -c 512 | head -c 8 | tr -d '\0')
 [ "$FIRST $LAST" = "EFI PART EFI PART" ] || die "$IMAGE is not a whole disk image (.raw or .raw.zst)"
+# Line by line: ssh-keygen -lf passes a file with one good key, a private key,
+# and known_hosts lines. The key data (base64, always AAAA…) must be the second
+# field, after the key type: sshd reads anything before the type as options and
+# refuses a known_hosts host field there, so options are not accepted either.
+if [ -n "$SSH_KEY" ]; then
+  [ -f "$SSH_KEY" ] && [ -r "$SSH_KEY" ] || die "--ssh-key $SSH_KEY: no such file"
+  n=0 keys=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+    read -r _ blob _ <<< "$line"
+    { [[ "$blob" == AAAA* ]] && ssh-keygen -lf - <<< "$line" >/dev/null 2>&1; } \
+      || die "--ssh-key $SSH_KEY: line $n is not a public key (key type first, no options)"
+    keys=$((keys + 1))
+  done < "$SSH_KEY"
+  [ "$keys" -gt 0 ] || die "--ssh-key $SSH_KEY: no public key in it"
+fi
 for d in "$DISK" "$DATA_DISK"; do
   [ -b "$d" ] || die "$d is not a block device"
   [ "$(lsblk -dnro TYPE "$d")" = disk ] || die "$d is not a whole disk"
@@ -106,14 +126,20 @@ else
   sgdisk -c1:librepod-data "$DATA_DISK" >/dev/null
 fi
 
-echo "==> writing $NAME, its data disk and setup code to root"
+echo "==> writing $NAME${SSH_KEY:+, its SSH key}, its data disk and setup code to root"
 MNT=$(mktemp -d)
 mount "$ROOT" "$MNT"
+umask 022 # sshd's StrictModes refuses keys under a group-writable /etc or /etc/ssh
 mkdir -p "$MNT/etc/librepod"
 echo "$NAME" > "$MNT/etc/hostname"
 echo "$DATA_UUID" > "$MNT/etc/librepod/data-partuuid"
 install -d -m 700 "$MNT/var/lib/librepod"
 (umask 077 && echo "$SETUP_CODE" > "$MNT/var/lib/librepod/setup-code")
+if [ -n "$SSH_KEY" ]; then
+  # Root's, 0644 in a 0755 directory: sshd's StrictModes. No CRs from Windows.
+  install -d -m 755 "$MNT/etc/ssh/authorized_keys.d"
+  tr -d '\r' < "$SSH_KEY" > "$MNT/etc/ssh/authorized_keys.d/librepod"
+fi
 umount "$MNT"
 
 echo "==> boot entry LibrePod, first in BootOrder"
