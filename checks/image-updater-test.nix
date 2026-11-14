@@ -204,6 +204,10 @@ pkgs.runCommand "image-updater-test"
     # an unreachable source keeps the state
     fresh; touch $STUBS/list-fails; $U tick; expect [ "$(st .state)" = up-to-date ]
     expect [ "$(st .detail)" = "could not reach the stable update source" ]
+    # and so does an install now with nothing known; the request goes
+    fresh; touch $STUBS/list-fails; echo '{"state":"failed","available":null,"detail":"d"}' > $D/status.json
+    $U install now; $U tick; expect [ ! -e $D/request ]
+    expect [ "$(st .state)/$(st .detail)" = "failed/could not reach the stable update source" ]
     # channel switch drops the other channel's download
     fresh; offer beta 0.5.3; offer stable 0.5.1; $U channel beta; $U tick; expect [ "$(cat $D/downloaded)" = 0.5.3 ]
     $U channel stable; $U tick; expect called "acquire 0.5.1"; expect [ "$(cat $D/downloaded)" = 0.5.1 ]

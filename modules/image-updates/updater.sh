@@ -200,7 +200,7 @@ decide() {
     settle "$v"
   elif [ -z "$v" ]; then
     rm -f "$REQUEST"
-    set_status up-to-date "${UNREACHABLE:-nothing newer to install}"
+    [ -n "$UNREACHABLE" ] || set_status up-to-date "nothing newer to install" # unreachable: check kept the state and said so
   elif [ "$v" = "$(downloaded_version)" ]; then
     rm -f "$REQUEST"
     install_version "$v"

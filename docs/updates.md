@@ -72,7 +72,8 @@ gone: `current` carries the version.
 
 Until the updater has written its first status (a few minutes after boot), the
 key holds only `handled`. While the update source can't be reached, the state
-stays as it was, `detail` says so, and `lastCheck` doesn't move.
+stays as it was, `detail` says so, and `lastCheck` doesn't move. An install the
+owner asks for then, with nothing known to install, is dropped.
 
 ### States
 
@@ -94,8 +95,8 @@ stays as it was, `detail` says so, and `lastCheck` doesn't move.
   in `failedVersions` while `settings.auto` is on.
 - `done`, `rolled-back` and `failed` stay until the next install starts or a
   check finds a version that is not in `failedVersions`. A check that finds
-  nothing new leaves them. An install the owner asked for, with nothing newer
-  to install, goes to `up-to-date`.
+  nothing new leaves them. An install the owner asked for goes to
+  `up-to-date` when the source has nothing newer.
 - `rolled-back`: the version is now in `failedVersions`, and k3s's data is as
   it was before the install. `detail` names the check that failed last: `k3s`,
   `sshd` or `node-not-ready` (it never stayed healthy for 2 minutes),
