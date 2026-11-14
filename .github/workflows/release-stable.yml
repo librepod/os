@@ -169,7 +169,17 @@ jobs:
           # Images trust only keys/release.pgp: never publish what they would refuse.
           gpgv --keyring "$GITHUB_WORKSPACE/keys/release.pgp" SHA256SUMS.gpg SHA256SUMS
 
+      # A re-run for a promoted release would mark it a prerelease again and demote Latest.
+      - name: Promoted already?
+        id: promoted
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: echo "promoted=$(gh release view "$TAG" --json isDraft,isPrerelease --jq '.isDraft or .isPrerelease | not' 2>/dev/null || echo false)" >> "$GITHUB_OUTPUT"
+
       - name: Publish GitHub Release
+        if: steps.promoted.outputs.promoted != 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
