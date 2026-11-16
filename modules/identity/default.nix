@@ -10,10 +10,10 @@
 # - data disk: one GPT partition labelled librepod-data, ext4, found by that
 #   UUID: PVs at /mnt/k3s (modules/data-disk)
 # - /var/lib/librepod/setup-code: the sticker's claim code, root-only
-#   (installer; modules/onboarding hands it to marketplace-ui)
+#   (installer; the OS agent publishes its bcrypt hash in the Device)
 # - /etc/ssh/authorized_keys.d/librepod: SSH public keys, root's, 0644
-#   (installer, --ssh-key); without it no SSH until a key is added at the
-#   console to ~librepod/.ssh/authorized_keys
+#   (installer, --ssh-key; later the Marketplace, through the OS agent);
+#   without it no SSH
 # SSH takes keys only; the generic password is console-only.
 { pkgs, lib, ... }:
 {
@@ -32,7 +32,11 @@
     AuthenticationMethods = "publickey";
     PasswordAuthentication = lib.mkForce false;
     KbdInteractiveAuthentication = false;
+    # root's locked password doesn't stop key logins
+    PermitRootLogin = lib.mkForce "no";
   };
+  # The one key source is /etc/ssh/authorized_keys.d/%u, which the OS agent owns.
+  services.openssh.authorizedKeysInHomedir = false;
 
   users.defaultUserShell = pkgs.zsh;
   # initialPassword applies once, when the account is created on first boot.

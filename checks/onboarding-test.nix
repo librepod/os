@@ -21,7 +21,7 @@ pkgs.runCommand "onboarding-test"
     STUB
     chmod +x "$ROOT/bin/kubectl"
 
-    # ---- scenario 1: the installer's code → Secret marketplace-ui/librepod-setup-code
+    # ---- scenario 1: the installer's code → logged for the console
     : > "$CALLS_LOG"
     echo 7KQMX3RT9VHC > "$ROOT/setup-code"
     log="$(LIBREPOD_SETUP_CODE_FILE="$ROOT/setup-code" bash "$PUBLISH")"
@@ -30,8 +30,8 @@ pkgs.runCommand "onboarding-test"
       && grep -qF "http://$(cat /proc/sys/kernel/hostname).local/#code=7KQM-X3RT-9VHC" <<< "$log" \
       && grep -qF "█" <<< "$log" \
       || { echo "FAIL: code, link or QR code not logged: $log"; exit 1; }
-    grep -qF "kubectl create secret generic librepod-setup-code --namespace marketplace-ui --from-file=code=$ROOT/setup-code --dry-run=client -o yaml" "$CALLS_LOG" \
-      || { echo "FAIL: Secret not published: $(cat "$CALLS_LOG")"; exit 1; }
+    # the OS agent publishes the hash; no Secret, and no kubectl at all
+    [ ! -s "$CALLS_LOG" ] || { echo "FAIL: kubectl ran: $(cat "$CALLS_LOG")"; exit 1; }
     [ "$(cat "$ROOT/setup-code")" = 7KQMX3RT9VHC ] || { echo "FAIL: the code was rewritten"; exit 1; }
 
     # ---- scenario 2: no code (installed another way) → nothing; marketplace-ui mints one

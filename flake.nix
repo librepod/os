@@ -71,6 +71,7 @@
         self.nixosModules.data-disk
         self.nixosModules.image
         self.nixosModules.image-updates
+        self.nixosModules.os-agent
         self.nixosModules.identity
         self.nixosModules.onboarding
         # Every image install shares it, so it is frozen: changing it needs a
@@ -107,6 +108,7 @@
         identity = ./modules/identity;
         image = ./modules/image;
         image-updates = ./modules/image-updates;
+        os-agent = ./modules/os-agent;
         k3s = import ./modules/k3s;
         netboot = import ./modules/netboot;
         networking = import ./modules/networking;
@@ -213,6 +215,10 @@
         nixpkgs.legacyPackages.x86_64-linux.callPackage ./pkgs/librepod-install
           { };
 
+      packages.x86_64-linux.librepod-os-agent =
+        nixpkgs.legacyPackages.x86_64-linux.callPackage ./pkgs/librepod-os-agent
+          { };
+
       # Local-only (KVM), throwaway: nix build .#ab-spike — A/B image updates with sysupdate
       ab-spike = nixpkgs.legacyPackages.x86_64-linux.callPackage ./checks/ab-spike { inherit nixpkgs; };
 
@@ -283,6 +289,8 @@
                   ];
                 };
             in
+            # Library devices keep sshd's default key lookup.
+            assert (mk "lenovo-m710q").config.services.openssh.authorizedKeysInHomedir;
             # The owner updates by `nix flake update` (README).
             assert nixpkgs.lib.all
               (f: builtins.elem f (mk "lenovo-m710q").config.nix.settings.experimental-features)
@@ -322,6 +330,11 @@
                   };
                 };
             in
+            assert c.systemd.services ? librepod-os-agent;
+            assert !(c.systemd.services ? librepod-update-bridge);
+            assert c.services.k3s.manifests ? librepod-device-crd;
+            assert !c.services.openssh.authorizedKeysInHomedir;
+            assert c.services.openssh.settings.PermitRootLogin == "no";
             assert nixpkgs.lib.hasSuffix "/bin/librepod-update-health" c.librepod.image.healthCheck;
             assert
               builtins.fromJSON c.environment.etc."librepod/channels.json".text == {
@@ -378,8 +391,35 @@
           image-updater-test = pkgs.callPackage ./checks/image-updater-test.nix { };
           image-health-test = pkgs.callPackage ./checks/image-health-test.nix { };
           installer-test = pkgs.callPackage ./checks/installer-test.nix { };
-          image-bridge-test = pkgs.callPackage ./checks/image-bridge-test.nix { };
           onboarding-test = pkgs.callPackage ./checks/onboarding-test.nix { };
+
+          # The agent's go test is its package build.
+          os-agent = self.packages.x86_64-linux.librepod-os-agent;
+          # The committed deepcopy and CRD are what controller-gen makes of the types.
+          os-agent-generated =
+            let
+              agent = self.packages.x86_64-linux.librepod-os-agent;
+            in
+            pkgs.runCommand "os-agent-generated"
+              {
+                nativeBuildInputs = [
+                  pkgs.go_1_25
+                  pkgs.kubernetes-controller-tools
+                  pkgs.diffutils
+                ];
+              }
+              ''
+                cp -r ${./pkgs/librepod-os-agent} src
+                chmod -R u+w src
+                cd src
+                ln -s ${agent.goModules} vendor
+                export HOME=$TMPDIR GOFLAGS=-mod=vendor GOTOOLCHAIN=local CGO_ENABLED=0
+                controller-gen object paths=./api/...
+                controller-gen crd paths=./api/... output:crd:artifacts:config=crd
+                diff -ru ${./pkgs/librepod-os-agent}/api api
+                diff -ru ${./pkgs/librepod-os-agent}/crd crd
+                touch $out
+              '';
 
           # Formatting check: ensures all .nix files are formatted.
           formatting = treefmtEval.config.build.check self;

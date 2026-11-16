@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Hands the device's setup code (the sticker's, minted by librepod-install) to
-# marketplace-ui, which adopts it from this Secret. Every boot; idempotent.
+# Logs the device's setup code (the sticker's, minted by librepod-install) for
+# the console. The OS agent publishes its bcrypt hash in the Device
+# (status.setupCodeHash), and k3s is not needed here. Every boot; idempotent.
 set -euo pipefail
 
 CODE_FILE="${LIBREPOD_SETUP_CODE_FILE:-/var/lib/librepod/setup-code}"
@@ -16,14 +17,3 @@ URL="http://$(< /proc/sys/kernel/hostname).local/#code=$CODE"
 echo "Setup code: $CODE"
 echo "Open $URL or scan:"
 qrencode -t UTF8 -m 2 "$URL"
-
-# Wait for K3S API (up to 5 min).
-for i in $(seq 1 60); do
-  kubectl get nodes >/dev/null 2>&1 && break
-  [ "$i" -eq 60 ] && { echo "Timed out waiting for K3S API"; exit 1; }
-  sleep 5
-done
-
-kubectl create namespace marketplace-ui --dry-run=client -o yaml | kubectl apply -f -
-kubectl create secret generic librepod-setup-code --namespace marketplace-ui \
-  --from-file=code="$CODE_FILE" --dry-run=client -o yaml | kubectl apply -f -
