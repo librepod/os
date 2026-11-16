@@ -145,5 +145,9 @@ umount "$MNT"
 echo "==> boot entry LibrePod, first in BootOrder"
 efibootmgr -q --create --disk "$DISK" --part "$ESP_N" --label LibrePod --loader '\EFI\BOOT\BOOTX64.EFI'
 
+if [ -z "$SSH_KEY" ]; then
+  echo "==> no SSH key given: SSH stays off until a key is added in the Marketplace"
+fi
+
 echo "==> installed $NAME: os $DISK, data $DATA_DISK. Reboot when ready."
 echo "==> then open http://$NAME.local, setup code ${SETUP_CODE:0:4}-${SETUP_CODE:4:4}-${SETUP_CODE:8:4}"

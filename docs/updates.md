@@ -1,4 +1,4 @@
-# OS updates: the ConfigMap contract
+# OS updates: the Device contract
 
 An image device (one written by `librepod-install`) updates itself from its
 channel, `stable` or `beta`, and needs no k3s for that. The Marketplace only
@@ -6,32 +6,39 @@ shows what the device reports and passes on the owner's answers. Library
 devices (`lib.mkDevice`) have no updater: the owner bumps the flake pin and
 runs `nixos-rebuild switch`.
 
-The two meet in one ConfigMap, `librepod-os/librepod-os-update`, in the OS's
-own namespace. A unit on the device, the bridge (`librepod-update-bridge`,
-after k3s, every minute), creates the namespace and the ConfigMap if they are
-missing, copies the updater's status into it and applies the owner's answers.
-The Marketplace UI needs a Role in `librepod-os` that can get and patch that
-ConfigMap.
+The two meet in one cluster-scoped object per device, `Device`
+(`os.librepod.org/v1alpha1`, short name `dev`), named after the Kubernetes Node.
+The OS agent (`librepod-os-agent`, on the device, after k3s) creates it with an
+empty `spec`, and never writes `spec` after that. The CRD ships with the OS
+(k3s's auto-deploy directory). **Discovery:** no `os.librepod.org` group means
+no OS features.
 
-It has three keys. Each side merge-patches only its own, and never applies the
-whole ConfigMap:
+- `spec`: the owner's answers, written by the Marketplace UI.
+- `status`: what the device reports, written only by the agent. The agent
+  writes it at least every 5 minutes (`status.updated`); the updater's status
+  shows in it within a minute.
 
-| key             | written by | holds                                     |
-| --------------- | ---------- | ----------------------------------------- |
-| `status.json`   | device     | what the updater reports                  |
-| `settings.json` | UI         | channel, automatic updates, time zone     |
-| `install.json`  | UI         | the owner's click: install now or tonight |
+The UI's ClusterRole: `devices` get, list, watch and patch, and nothing on
+`devices/status`.
 
-Settings and the click are two keys, so a click right after onboarding cannot
-overwrite the settings.
+The `Device` is only a mailbox. The device keeps what it handled on disk
+(`/var/lib/librepod/agent`, root only), so deleting or re-creating the `Device`
+never starts an update or replays an answer: the agent re-creates it with an
+empty `spec` and `status.handled` as it was.
 
-The ConfigMap is only a mailbox. The device keeps its settings, its status and
-what it handled on disk (`/var/lib/librepod/updates`, root only), so deleting
-or re-creating the ConfigMap never starts an update or replays an answer; the
-bridge writes `status.json` back. The node label `librepod.os/version` is
-gone: `current` carries the version.
+## `status` (device → UI)
 
-## `status.json` (device → UI)
+| field               | holds                                                                  |
+| ------------------- | ---------------------------------------------------------------------- |
+| `updated`           | when the agent last wrote `status`                                     |
+| `handled`           | `{updates, install, power, sshKeys}`: the last `rev` or `id` acted on, `0` for none |
+| `rejected`          | per section, why the last answer was refused; cleared when that section's next answer is applied |
+| `update`            | the updater's status, below                                            |
+| `system`            | `version`, `rootDisk`, `dataDisk` (`present`, sizes in bytes)          |
+| `sshKeys`           | the public keys that can log in, below                                 |
+| `setupCodeHash`     | bcrypt of the setup code, below                                        |
+
+### `status.update`
 
 ```json
 {
@@ -41,7 +48,6 @@ gone: `current` carries the version.
   "state": "ready",
   "installAt": null,
   "settings": { "channel": "stable", "auto": false, "timezone": "Europe/Minsk" },
-  "handled": { "settings": 3, "install": 7 },
   "failedVersions": [],
   "lastCheck": "2026-11-13T12:00:00Z",
   "updated": "2026-11-13T12:00:05Z",
@@ -67,13 +73,12 @@ gone: `current` carries the version.
   `updated`), or `null` before the first.
 - `updated`: when any other field of the updater's status last changed, UTC.
   A check moves it, through `lastCheck`.
-- `handled`: the last `rev` of `settings.json` and the last `id` of
-  `install.json` the bridge dealt with, `0` for none. The bridge adds it.
 
-Until the updater has written its first status (a few minutes after boot), the
-key holds only `handled`. While the update source can't be reached, the state
-stays as it was, `detail` says so, and `lastCheck` doesn't move. An install the
-owner asks for then, with nothing known to install, is dropped.
+The updater owns this schema; the agent copies its `status.json` verbatim, and
+leaves `update` out until the updater has written one (a few minutes after
+boot). While the update source can't be reached, the state stays as it was,
+`detail` says so, and `lastCheck` doesn't move. An install the owner asks for
+then, with nothing known to install, is dropped.
 
 ### States
 
@@ -100,7 +105,8 @@ owner asks for then, with nothing known to install, is dropped.
   `up-to-date` when the source has nothing newer.
 - `rolled-back`: the version is now in `failedVersions`, and k3s's data is as
   it was before the install. `detail` names the check that failed last: `k3s`,
-  `sshd` or `node-not-ready` (it never stayed healthy for 2 minutes),
+  `sshd`, `node-not-ready` or `agent` (the OS agent did not report during the
+  new version's first boot; the check never stayed healthy for 2 minutes),
   `update-source` (healthy, but the channel's signed `SHA256SUMS` could not be
   fetched and verified, so the new version could not update itself), or `did
   not finish` (a panic, a hang or a power cut).
@@ -113,74 +119,112 @@ owner asks for then, with nothing known to install, is dropped.
   every 6 hours, `check`, or a new channel) or when the owner asks to install.
   Until then the state stays `failed`. A newer version downloads as usual.
 
-## `settings.json` (UI → device)
+### `status.setupCodeHash`
 
-```json
-{ "rev": 3, "channel": "beta", "auto": true, "timezone": "Europe/Minsk" }
+The sticker's setup code as a bcrypt hash (cost 12). The UI normalizes what the
+owner typed (uppercase, no dashes or spaces: `7kqm-x3rt-9vhc` becomes
+`7KQMX3RT9VHC`) and compares it with the hash. The field is absent on a device
+without a code: the Marketplace then mints and logs its own. The code itself is
+never in the cluster.
+
+## `spec` (UI → device)
+
+Four sections. Write a whole section each time, never part of one.
+
+```yaml
+spec:
+  updates: { rev: 3, channel: beta, auto: true, timezone: Europe/Minsk }
+  install: { id: 7, when: now }
 ```
 
-Onboarding writes it, and so does every later change, all four keys each time.
+### `spec.updates`
 
-- `rev`: a whole number from 1 to 999999999999999, written as a plain integer
-  (not `3.0` or `1e3`).
+Onboarding writes it, and so does every later change, all four fields each time.
+
+- `rev`: a whole number from 1 to 999999999999999.
 - `channel`: `stable` or `beta`. A new channel is checked at once.
-- `auto`: `true` or `false`, a JSON boolean. On: every new version installs in
-  the night window.
+- `auto`: on, every new version installs in the night window.
 - `timezone`: an IANA zone the device's tzdata has, such as `Europe/Minsk`.
   Onboarding sends the browser's. The updater uses it for the night window
   only.
 
-## `install.json` (UI → device)
-
-```json
-{ "id": 7, "when": "now" }
-```
+### `spec.install`
 
 - `id`: as `rev`.
 - `when`: `now` (install as soon as the download is there) or `tonight` (the
   next night window). It names no version. The owner's click also retries a
-  version in `failedVersions`; automatic updates never do.
+  version in `failedVersions`; automatic updates never do. With automatic
+  updates off, nothing installs by itself.
+
+### `spec.power`
+
+```yaml
+spec:
+  power: { id: 1, action: reboot }
+```
+
+- `id`: as `rev`.
+- `action`: `reboot` or `poweroff`.
+- Refused while an update is installing: `status.rejected.power` says
+  `an update is installing`, and the answer counts as handled.
+- The agent saves the `id` before it acts, so a restart in between never
+  repeats it. A lost click beats a repeated one: if the device did not go down,
+  send a new `id`.
+
+### `spec.sshKeys`
+
+```yaml
+spec:
+  sshKeys: { rev: 2, keys: ["ssh-ed25519 AAAA... me@laptop"] }
+```
+
+The whole list, each time: the keys that can log in as `librepod` over SSH
+(root never can). An empty list means no SSH. At most 32 keys, each
+`<type> <base64 starting AAAA> [comment]` on one line, with no options. One bad
+key rejects the whole answer: `status.rejected.sshKeys` says `key 2 is not a
+public key (key type first, no options)`, counting from 1.
+
+The agent adopts the installer's keys (`--ssh-key`) once, at its first run,
+and from then on the UI's list is the truth: the agent puts the file sshd reads
+(`/etc/ssh/authorized_keys.d/librepod`) back within a minute if it was edited
+by hand. `status.sshKeys` is the list now in force (the adopted one until the
+first answer).
 
 ## Handled once
 
-The bridge acts on a `rev` or `id` once, and only on one above the last it
-handled (`status.handled`). Raise it for every new answer: the latest action
-wins. Anything else is ignored: not a number, not a whole number from 1, or at
-or below the last one handled.
+The agent acts on a section once, and only when its `rev` or `id` is above
+`status.handled.<section>`. Raise it for every new answer: the latest action
+wins. Anything else is ignored. The agent keeps the numbers on disk, so they
+are never derived from `metadata.generation` or `resourceVersion`.
 
-A rollback restores k3s's datastore, this ConfigMap included, so `settings.json`
-and `install.json` can go back to a lower `rev` or `id` while `status.handled`
-stays higher. The UI numbers its next answer max(its own last, `handled.*`) + 1.
+A rollback restores k3s's datastore, the `Device` included, so `spec` can go
+back to a lower `rev` or `id` while `status.handled` stays higher; the agent
+changes nothing for it. The UI numbers its next answer max(its own last,
+`status.handled.<section>`) + 1.
 
 A `rev` or `id` that is above the last but fails validation is rejected, and
-counts as handled:
+counts as handled, with the reason in `status.rejected.<section>`:
 
-- `settings.json`: `channel` is not `stable` or `beta`; `auto` is not `true` or
-  `false`; `timezone` is not a zone the device knows. Nothing from that answer
-  is applied.
-- `install.json`: `when` is not `now` or `tonight`.
+- `updates`: `the time zone is unknown` (the schema refuses a bad channel).
+  Nothing from that answer is applied.
+- `install`: `when is not now or tonight`.
 
-A rejection shows in `status.detail`, in place of the updater's own: `settings
-rev 4 rejected: the time zone is unknown`, or `install id 8 rejected: when is
-not now or tonight`. It stays until the updater's status moves on (`updated`
-changes: a state change, or the next check). After that `handled` still shows
-the answer was dealt with, and `settings` shows whether it was applied. Send a
-corrected answer under a higher `rev` or `id`.
+For example `updates rev 4: the time zone is unknown`. Send a corrected answer
+under a higher number.
 
 ## The CLI
 
-On the device, as root, with or without k3s. The bridge calls the same
+On the device, as root, with or without k3s. The agent calls the same
 commands, so a change made here shows in `status.settings`.
 
 ```
 librepod-update status | check | install now|tonight | channel stable|beta | auto on|off | timezone ZONE
 ```
 
-- `status`: refresh and print the updater's status (the bridge adds
-  `handled`).
+- `status`: refresh and print the updater's status.
 - `check`: check now, download what it finds, then print the status.
-- `install now|tonight`: as `install.json`.
-- `channel stable|beta`, `auto on|off`, `timezone ZONE`: as `settings.json`;
+- `install now|tonight`: as `spec.install`.
+- `channel stable|beta`, `auto on|off`, `timezone ZONE`: as `spec.updates`;
   `ZONE` is a name such as `Europe/Minsk`.
 
 ## The install

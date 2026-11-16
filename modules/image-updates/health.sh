@@ -10,6 +10,8 @@ DEADLINE="${LIBREPOD_HEALTH_DEADLINE:-720}"
 STABLE="${LIBREPOD_HEALTH_STABLE:-120}"
 INTERVAL="${LIBREPOD_POLL_INTERVAL:-15}"
 PUBRING="${LIBREPOD_PUBRING:-/etc/systemd/import-pubring.pgp}"
+AGENT_HEARTBEAT="${LIBREPOD_AGENT_HEARTBEAT:-/var/lib/librepod/agent/status-written}"
+BOOT_TIME="${LIBREPOD_BOOT_TIME:-$(sed -n 's/^btime //p' /proc/stat)}"
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
@@ -21,7 +23,11 @@ failing_check() {
   # Its own timeout: a hung API server must not eat the deadline.
   [ "$(k3s kubectl --request-timeout=10s get node "$(cat /proc/sys/kernel/hostname)" \
     -o 'jsonpath={.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" = True ] \
-    || echo node-not-ready
+    || { echo node-not-ready; return; }
+  # The OS agent runs, and wrote the Device's status during this boot: without
+  # it the Marketplace can't reach the device.
+  systemctl is-active --quiet librepod-os-agent || { echo agent; return; }
+  [ "$(stat -c %Y "$AGENT_HEARTBEAT" 2>/dev/null || echo 0)" -ge "$BOOT_TIME" ] || echo agent
 }
 
 # The channel's checksums, signed by a key this image trusts.

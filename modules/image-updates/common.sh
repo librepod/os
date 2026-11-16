@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Shared preamble for librepod-update, librepod-update-health and
-# librepod-update-bridge. Concatenated ahead of each script by
+# Shared preamble for librepod-update and librepod-update-health. Concatenated ahead of each script by
 # modules/image-updates/scripts.nix — one place for env defaults and the
-# status.json contract, so the three can't drift. All paths are
+# status.json contract, so the two can't drift. All paths are
 # env-overridable for the stub tests.
 
 # Each script uses a subset of these.
@@ -34,7 +33,7 @@ INITIAL_STATUS='{"state":"up-to-date","available":null,"lastCheck":null,"install
 write_state() { echo "$2" > "$1.new.$$" && sync "$1.new.$$" && mv -f "$1.new.$$" "$1" && sync "$STATE_DIR"; } # file in STATE_DIR, content
 
 now() { echo "${LIBREPOD_NOW:-$(date +%s)}"; } # epoch seconds
-# One format everywhere: the bridge compares these as strings.
+# One format everywhere: the updater compares these as strings.
 iso_now() { date -u -d @"$(now)" +%Y-%m-%dT%H:%M:%SZ; }
 
 # The booted image's version, never a file the updater writes.

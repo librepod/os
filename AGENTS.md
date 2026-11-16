@@ -32,11 +32,12 @@ nix fmt -- --ci
 
 ### Key Module Interactions
 
-- **k3s** — Pinned to a specific nixpkgs commit via `k3s-nixpkgs` input; accepts `k3s-nixpkgs` via `specialArgs`. Imports `coredns.nix` which patches CoreDNS to forward `libre.pod`, `librepod.dev`, and `librepod.local` zones to the host's Unbound.
+- **k3s** — Pinned to a specific nixpkgs commit via `k3s-nixpkgs` input; accepts `k3s-nixpkgs` via `specialArgs`.
+- **os-agent** — `librepod-os-agent` (Go, `pkgs/librepod-os-agent`) serves `Device` (`os.librepod.org/v1alpha1`, CRD via `services.k3s.manifests`) on image devices: the Marketplace writes `spec`, the agent writes `status`. Contract: `docs/updates.md`.
 - **nfs** — Exports `/exports/k3s` (bind-mounted from `/mnt/k3s`) for K3S persistent volumes, and turns off k3s's built-in local-storage (`services.k3s.disable`). A replacement storage module must carry that line too.
 - **duplicati** — Uses a strategy pattern: `default.nix` imports either `per-pvc.nix` or `single.nix`. Has a `services.duplicati.k3sPostBackupReconcile` option supporting `argocd`, `snapshot`, or `fluxcd` reconciliation modes.
 - **gobackup** — Self-packages GoBinary (`package.nix`), generates YAML config from NixOS options via `lib.generators.toYAML`, and creates per-model systemd services/timers.
-- **onboarding** — `librepod-setup-code` publishes `/var/lib/librepod/setup-code` (written by `librepod-install`; root-only, never in `/etc/nixos`, which flake builds copy into the store) as Secret `marketplace-ui/librepod-setup-code`, and logs the code with its `#code=` link and a QR code (root and wheel read the journal; marketplace-ui never logs it). No file → does nothing; marketplace-ui mints and logs a code.
+- **onboarding** — `librepod-setup-code` logs `/var/lib/librepod/setup-code` (written by `librepod-install`; root-only, never in `/etc/nixos`, which flake builds copy into the store) with its `#code=` link and a QR code (root and wheel read the journal; marketplace-ui never logs it). The OS agent publishes the code's bcrypt hash in `Device.status.setupCodeHash`; there is no Secret. No file → no hash; marketplace-ui mints and logs a code.
 - **gitolite** — Three chained systemd services: `gitolite-init` (keygen + setup) → `gitolite-user-setup` (SSH config + clone) → `gitolite-flux-k8s-secret` (provisions K8S secret for Flux).
 
 ### Device Profiles

@@ -12,7 +12,7 @@
 # It reads a signed release, as CI publishes one, and finds its own profile's
 # version there; the installer writes that release's disk image.
 # Then it updates itself from 0.5.0, as the real units do: from stable with k3s
-# stopped; automatically in the night window, set through the ConfigMap, to a
+# stopped; automatically in the night window, set through the Device, to a
 # version that fails its health gate and is rolled back with k3s's data
 # restored; never automatically again, but when the owner asks; beta's version
 # only on beta; and after a power cut mid-install, back on the old version.
@@ -104,6 +104,7 @@ let
 in
 hostPkgs.testers.runNixOSTest {
   name = "image-e2e";
+  extraPythonPackages = p: [ p.bcrypt ]; # the test driver checks the setup code against its hash
   # The default hour isn't enough with the update scenarios' ten-odd boots.
   globalTimeout = 3 * 3600;
   # The k3s overlay in imageModules
@@ -362,6 +363,7 @@ hostPkgs.testers.runNixOSTest {
 
       # The client's key; nothing is set up for librepod on the pod.
       key = open("${sshKeys.snakeOilPrivateKey}").read()
+      snake = "${sshKeys.snakeOilPublicKey}".strip()  # what the installer put in authorized_keys.d
       pod.succeed(f"umask 077; cat > /root/key <<'EOF'\n{key}EOF")
       opts = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
       by_key = f"ssh -o BatchMode=yes {opts} -i /root/key {{user}}@localhost true"
@@ -397,6 +399,14 @@ hostPkgs.testers.runNixOSTest {
               " | jq -e '.status.conditions[] | select(.type==\"Ready\") | .status==\"True\"'",
               timeout=600,
           )
+
+      def answer(section, value):  # what the Marketplace writes: one section of spec
+          patch = json.dumps({"spec": {section: value}})
+          pod.wait_until_succeeds(f"k3s kubectl patch dev pod-image --type merge -p '{patch}'", timeout=300)
+
+      def wait_published(cond):  # the updater's status as the agent publishes it, within 2 min
+          pod.wait_until_succeeds("k3s kubectl get dev pod-image -o json"
+                                  f" | jq -e '.status.update | {cond}'", timeout=120)
 
       with subtest("hostname comes from /etc/hostname"):
           assert pod.succeed("hostname").strip() == "pod-image", pod.succeed("hostname")
@@ -444,12 +454,75 @@ hostPkgs.testers.runNixOSTest {
           wait_ready()
           assert pod.succeed("k3s kubectl get nodes -o name").split() == ["node/pod-image"]
 
-      with subtest("the sticker's setup code reaches marketplace-ui"):
+      with subtest("the agent creates the Device; only the UI's role writes its spec"):
+          kc = "k3s kubectl"
+          pod.wait_until_succeeds(
+              f"{kc} get dev pod-image -o json | jq -e '.status.updated and .status.system.version == \"0.5.0\""
+              " and .status.system.dataDisk.present'", timeout=300)
+          rbac = {"apiVersion": "v1", "kind": "List", "items": [
+              {"apiVersion": "v1", "kind": "ServiceAccount", "metadata": {"name": "ui", "namespace": "default"}},
+              {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRole", "metadata": {"name": "ui-device"},
+               "rules": [{"apiGroups": ["os.librepod.org"], "resources": ["devices"],
+                          "verbs": ["get", "list", "watch", "patch"]}]},
+              {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRoleBinding", "metadata": {"name": "ui-device"},
+               "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "ui-device"},
+               "subjects": [{"kind": "ServiceAccount", "name": "ui", "namespace": "default"}]},
+          ]}
+          pod.succeed(f"echo '{json.dumps(rbac)}' | {kc} apply -f -")
+          ui = f"{kc} --as=system:serviceaccount:default:ui"
+          pod.wait_until_succeeds(
+              f"""{ui} patch dev pod-image --type merge -p '{{"metadata":{{"labels":{{"e2e":"1"}}}}}}'""", timeout=60)
+          pod.fail(f"""{ui} patch dev pod-image --subresource=status --type merge -p '{{"status":{{"handled":{{"power":9}}}}}}'""")
+          # the schema refuses these, even for an admin
+          fakekey = "AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+          bad = [
+              {"power": {"id": 1, "action": "halt"}},
+              {"updates": {"rev": 1, "channel": "nightly", "auto": True, "timezone": "UTC"}},
+              {"sshKeys": {"rev": 1, "keys": [f'command="x" ssh-ed25519 {fakekey}']}},
+              {"sshKeys": {"rev": 1, "keys": [f"ssh-ed25519 {fakekey}"] * 33}},
+          ]
+          for spec in bad:
+              pod.fail(f"{kc} patch dev pod-image --type merge -p '{json.dumps({'spec': spec})}'")
+
+      with subtest("a reboot from the Device happens once"):
+          n = boots() + 1
+          answer("power", {"id": 1, "action": "reboot"})
+          up_after(n)
+          wait_ready()
+          boot = int(pod.succeed("date +%s")) - int(pod.succeed("cut -d. -f1 /proc/uptime"))
+          pod.wait_until_succeeds(
+              "k3s kubectl get dev pod-image -o json"
+              f" | jq -e '.status.handled.power == 1 and (.status.updated | fromdate) > {boot}'", timeout=300)
+          time.sleep(60)  # the same answer must not reboot it again
+          assert boots() == n, (boots(), n)
+
+      with subtest("SSH keys: the installer's key shows; the Device's list replaces it; a hand edit is put back"):
+          keyfile = "/etc/ssh/authorized_keys.d/librepod"
+
+          def keys_are(keys):
+              want = "\n".join(keys)
+              pod.wait_until_succeeds(f"test \"$(cat {keyfile})\" = '{want}'", timeout=120)
+
+          pod.wait_until_succeeds(
+              f"k3s kubectl get dev pod-image -o json | jq -e --arg k '{snake}' '.status.sshKeys == [$k]'", timeout=300)
+          pod.succeed('ssh-keygen -q -t ed25519 -N "" -f /root/k2')
+          k2 = pod.succeed("cat /root/k2.pub").strip()
+          answer("sshKeys", {"rev": 1, "keys": [snake, k2]})
+          keys_are([snake, k2])
+          pod.succeed(f"echo junk >> {keyfile}")
+          keys_are([snake, k2])  # put back by the next run
+          pod.succeed(by_key.format(user="librepod"))
+
+      with subtest("the sticker's setup code is published as a hash"):
+          import bcrypt
           assert pod.succeed("stat -c %a /var/lib/librepod/setup-code").strip() == "600"
-          pod.wait_until_succeeds("k3s kubectl -n marketplace-ui get secret librepod-setup-code", timeout=300)
-          got = pod.succeed("k3s kubectl -n marketplace-ui get secret librepod-setup-code"
-                            " -o jsonpath='{.data.code}' | base64 -d").strip()
-          assert got == code.replace("-", ""), (got, code)
+          pod.wait_until_succeeds("k3s kubectl get dev pod-image -o json | jq -e '.status.setupCodeHash | length > 0'", timeout=300)
+          h = pod.succeed("k3s kubectl get dev pod-image -o jsonpath='{.status.setupCodeHash}'").strip()
+          assert bcrypt.checkpw(code.replace("-", "").encode(), h.encode()), (h, code)
+          assert not bcrypt.checkpw(b"AAAAAAAAAAAA", h.encode())
+          # no Secret, and no marketplace namespace either: the VM has no network for Flux to deploy it
+          pod.succeed("! k3s kubectl get secrets -A -o name | grep -q librepod-setup-code")
+          pod.fail("k3s kubectl get namespace marketplace-ui")
           # and for a device without its sticker, the journal shows it with its link and a QR code
           journal = pod.succeed("journalctl -u librepod-setup-code -o cat")
           assert f"http://pod-image.local/#code={code}" in journal and "█" in journal, journal
@@ -468,8 +541,17 @@ hostPkgs.testers.runNixOSTest {
           password_refused("new-pw")
 
       with subtest("without a key: no SSH, the console login works"):
-          pod.succeed("rm /etc/ssh/authorized_keys.d/librepod")  # as installed without --ssh-key
+          pod.succeed(f"echo '{snake}' > /root/key.pub")
+          answer("sshKeys", {"rev": 2, "keys": []})  # as installed without --ssh-key
+          pod.wait_until_succeeds("test ! -s /etc/ssh/authorized_keys.d/librepod", timeout=120)
           pod.fail(by_key.format(user="librepod"))
+          # keys only from authorized_keys.d: not from the home directory, and not for root
+          pod.succeed("install -d -m 700 -o librepod /home/librepod/.ssh")
+          pod.succeed("install -m 600 -o librepod /root/key.pub /home/librepod/.ssh/authorized_keys")
+          pod.fail(by_key.format(user="librepod"))
+          pod.succeed("install -m 644 /root/key.pub /etc/ssh/authorized_keys.d/root")
+          pod.fail(by_key.format(user="root"))
+          pod.succeed("rm /home/librepod/.ssh/authorized_keys /etc/ssh/authorized_keys.d/root")
           pod.wait_for_unit("getty@tty1.service")
           pod.wait_until_tty_matches("1", "login: ")
           pod.send_chars("librepod\n")
@@ -501,15 +583,6 @@ hostPkgs.testers.runNixOSTest {
           pod.wait_until_succeeds(f"librepod-update status | jq -e '{cond}'", timeout=timeout)
           return status()
 
-      def wait_published(cond):  # the bridge's copy in the ConfigMap, within 2 min
-          pod.wait_until_succeeds("k3s kubectl -n librepod-os get configmap librepod-os-update -o json"
-                                  f" | jq -e '.data[\"status.json\"] | fromjson | {cond}'", timeout=120)
-
-      def answer(key, value):  # what the Marketplace writes
-          patch = json.dumps({"data": {key: json.dumps(value)}})
-          pod.wait_until_succeeds("k3s kubectl -n librepod-os patch configmap librepod-os-update"
-                                  f" --type merge -p '{patch}'", timeout=300)
-
       def installed():  # versions in the slots, a downloaded one too
           return json.loads(pod.succeed("systemd-sysupdate --offline --json=short list"))["all"]
 
@@ -536,13 +609,13 @@ hostPkgs.testers.runNixOSTest {
           assert pod.succeed("/run/current-system/systemd/lib/systemd/systemd-bless-boot status").strip() == "good"
           pod.fail("test -e /var/lib/librepod/updates/k3s-db")
 
-      with subtest("automatic in the night window, set through the ConfigMap: 0.5.2 fails, 0.5.1 is back with its k3s data"):
+      with subtest("automatic in the night window, set through the Device: 0.5.2 fails, 0.5.1 is back with its k3s data"):
           pod.succeed("k3s kubectl create configmap made-by-0-5-1")
           serve("stable", "${repo releases."0.5.2"}")
           pod.succeed("librepod-update check")  # stands in for the 6-hourly check
           zone = window_zone()
           n = boots() + 3  # the install, then 0.5.2's two tries
-          answer("settings.json", {"rev": 1, "channel": "stable", "auto": True, "timezone": zone})
+          answer("updates", {"rev": 1, "channel": "stable", "auto": True, "timezone": zone})
           try:
               wait_status(f'.settings.auto and .settings.timezone == "{zone}"', timeout=300)
               # the timer's next run, without waiting up to 20 min for it
@@ -567,7 +640,7 @@ hostPkgs.testers.runNixOSTest {
           s = status()
           assert s["state"] == "rolled-back" and not s["downloaded"], s
           n = boots() + 3  # downloaded again, installed, 0.5.2's two tries
-          answer("install.json", {"id": 1, "when": "now"})
+          answer("install", {"id": 1, "when": "now"})
           up_after(n, timeout=1800)
           assert version() == "0.5.1"
           s = wait_status('.state == "rolled-back"')
@@ -575,6 +648,12 @@ hostPkgs.testers.runNixOSTest {
           assert "0.5.2" not in installed(), installed()
 
       with subtest("beta offers 0.5.3; stable doesn't, with beta's download in the slot"):
+          # a restored spec below what was handled changes nothing (a rollback restores k3s's datastore)
+          pod.succeed("librepod-update channel beta")
+          answer("updates", {"rev": 1, "channel": "stable", "auto": True, "timezone": "UTC"})
+          time.sleep(60)
+          assert status()["settings"]["channel"] == "beta", status()
+          pod.succeed("k3s kubectl get dev pod-image -o json | jq -e '.status.handled.updates == 1'")
           pod.succeed("librepod-update auto off")
           pod.succeed("librepod-update channel beta")
           wait_status('.settings.channel == "beta" and .available == "0.5.3" and .downloaded')

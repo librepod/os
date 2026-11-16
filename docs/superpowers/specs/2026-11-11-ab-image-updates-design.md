@@ -465,8 +465,8 @@ There are two kinds of device, with two update paths:
   datastore a newer k3s wrote.
 - An install the owner didn't choose: with automatic updates off, nothing
   installs by itself.
-- Anything a pod writes reaching the host unvalidated: the Marketplace UI faces
-  the internet.
+- Anything a pod writes reaching the host unvalidated: the Marketplace installs
+  third-party apps, and any pod can reach the host.
 
 ### Channels and versions (release pipeline)
 

@@ -11,6 +11,7 @@ let
         jq
         coreutils
         gnugrep
+        gnused
       ];
     })
     health
@@ -30,7 +31,8 @@ pkgs.runCommand "image-health-test"
     echo '{"stable":"http://stable.invalid/","beta":"http://beta.invalid/"}' > $T/channels.json
     export CALLS_LOG=$T/calls.log STUBS LIBREPOD_UPDATES_DIR=$D LIBREPOD_CHANNELS=$T/channels.json \
       LIBREPOD_PUBRING=$T/pubring.pgp LIBREPOD_HEALTH_DEADLINE=6 LIBREPOD_HEALTH_STABLE=2 \
-      LIBREPOD_POLL_INTERVAL=1 TMPDIR=$T/tmp
+      LIBREPOD_POLL_INTERVAL=1 TMPDIR=$T/tmp LIBREPOD_AGENT_HEARTBEAT=$T/heartbeat \
+      LIBREPOD_BOOT_TIME=$(date +%s)
     export PATH=$STUBS/bin:$PATH
     H=${health}/bin/librepod-update-health
     stub() { printf '#!/bin/sh\necho "%s $*" >> "$CALLS_LOG"\n%s\n' "$1" "$2" > $STUBS/bin/$1; chmod +x $STUBS/bin/$1; }
@@ -51,7 +53,8 @@ pkgs.runCommand "image-health-test"
     [ -s "$3" ] && [ -s "$4" ]'
     fresh() { rm -rf $D $STUBS/down-* $STUBS/bad-sig $STUBS/flip; mkdir -p $D $STUBS/srv; echo True > $STUBS/ready
               echo sums > $STUBS/srv/SHA256SUMS; echo signature > $STUBS/srv/SHA256SUMS.gpg; : > $CALLS_LOG
-              echo '{"from":"0.5.0","to":"0.5.1","phase":"installed"}' > $D/record.json; }
+              echo '{"from":"0.5.0","to":"0.5.1","phase":"installed"}' > $D/record.json
+              touch $T/heartbeat; }  # the agent reported during this boot
     reason() { jq -r .reason $D/record.json; }
     called() { grep -qF -- "$1" $CALLS_LOG; }
     not() { ! "$@"; }
@@ -69,6 +72,10 @@ pkgs.runCommand "image-health-test"
     fresh; touch $STUBS/down-sshd; expect not $H; expect [ "$(reason)" = sshd ]; expect not called curl
     fresh; echo False > $STUBS/ready; expect not $H; expect [ "$(reason)" = node-not-ready ]; expect not called curl
     fresh; touch $STUBS/down-k3s $STUBS/down-sshd; expect not $H; expect [ "$(reason)" = k3s ]   # the first to fail
+    fresh; touch $STUBS/down-librepod-os-agent; expect not $H; expect [ "$(reason)" = agent ]; expect not called curl
+    fresh; touch -d @$((LIBREPOD_BOOT_TIME - 10)) $T/heartbeat; expect not $H; expect [ "$(reason)" = agent ]   # reported before this boot
+    fresh; rm $T/heartbeat; expect not $H; expect [ "$(reason)" = agent ]
+    fresh; touch $STUBS/down-k3s $STUBS/down-librepod-os-agent; expect not $H; expect [ "$(reason)" = k3s ]
     fresh; touch $STUBS/down-k3s $STUBS/flip; expect not $H; expect [ "$(reason)" = sshd ]       # the one that failed last
     fresh; touch $STUBS/bad-sig; expect not $H; expect [ "$(reason)" = update-source ]
     fresh; rm $STUBS/srv/SHA256SUMS.gpg; expect not $H; expect [ "$(reason)" = update-source ]

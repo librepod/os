@@ -135,7 +135,7 @@ health gate; if it fails, the old version boots again and k3s's data is
 restored to what it was before. Over ssh,
 `librepod-update status | check | install now|tonight | channel stable|beta | auto on|off | timezone ZONE`
 does the same. The Marketplace shows the status and passes on the owner's
-answers through a ConfigMap ([contract](docs/updates.md)).
+answers through the `Device` object ([contract](docs/updates.md)).
 
 A **library device** (the flake above) has no updater. Bump its pin, to
 `github:librepod/os/vX.Y.Z`, to `github:librepod/os` (master) or to the
@@ -159,7 +159,7 @@ curl https://raw.githubusercontent.com/librepod/librepod-install/master/librepod
 ## Testing
 
 ```bash
-nix flake check            # eval checks, stubbed installer/onboarding scenarios, the updater, health gate and bridge (image-updater-test, image-health-test, image-bridge-test), formatting
+nix flake check            # eval checks, stubbed installer/onboarding scenarios, the updater and health gate (image-updater-test, image-health-test), formatting
 nix build .#image-e2e -L   # the image installed, booted and updated in a QEMU VM
 ```
 
