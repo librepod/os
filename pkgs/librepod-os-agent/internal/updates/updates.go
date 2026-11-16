@@ -14,12 +14,8 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
-const maxNumber = 999999999999999
-
 // The zone becomes part of a path, so the shape is checked before the file.
 var zoneShape = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*$`)
-
-func fresh(n, last int64) bool { return n >= 1 && n <= maxNumber && n > last }
 
 func validZone(tzdir, zone string) bool {
 	if !zoneShape.MatchString(zone) {
@@ -34,7 +30,7 @@ func validZone(tzdir, zone string) bool {
 // it. If the CLI fails the section's number is not recorded: the next run
 // retries it.
 func Apply(spec v1alpha1.DeviceSpec, st *state.Store, run func(args ...string) error, tzdir string) error {
-	if u := spec.Updates; u != nil && fresh(u.Rev, st.S.Last("updates")) {
+	if u := spec.Updates; u != nil && st.S.Fresh("updates", u.Rev) {
 		var why string
 		switch {
 		case u.Channel != "stable" && u.Channel != "beta":
@@ -60,7 +56,7 @@ func Apply(spec v1alpha1.DeviceSpec, st *state.Store, run func(args ...string) e
 			return err
 		}
 	}
-	if i := spec.Install; i != nil && fresh(i.ID, st.S.Last("install")) {
+	if i := spec.Install; i != nil && st.S.Fresh("install", i.ID) {
 		if i.When == "now" || i.When == "tonight" {
 			if err := run("install", i.When); err != nil {
 				return err

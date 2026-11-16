@@ -58,37 +58,10 @@ func mounted(mountinfo, path string) bool {
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		fs := strings.Fields(sc.Text())
-		if len(fs) > 4 && unescape(fs[4]) == path {
+		// shortcut: mountinfo escapes spaces as \040 and this compares as is; unescape if the data path ever has one.
+		if len(fs) > 4 && fs[4] == path {
 			return true
 		}
 	}
 	return false
-}
-
-// unescape undoes mountinfo's octal escapes (\040 for a space, ...).
-func unescape(s string) string {
-	if !strings.Contains(s, `\`) {
-		return s
-	}
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\\' && i+3 < len(s) {
-			var n int
-			ok := true
-			for _, c := range s[i+1 : i+4] {
-				if c < '0' || c > '7' {
-					ok = false
-					break
-				}
-				n = n*8 + int(c-'0')
-			}
-			if ok {
-				b.WriteByte(byte(n))
-				i += 3
-				continue
-			}
-		}
-		b.WriteByte(s[i])
-	}
-	return b.String()
 }

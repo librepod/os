@@ -233,7 +233,8 @@ A version is downloaded into the spare slot as soon as it is found. To install
 it, the updater records what it is doing, stops k3s, copies k3s's datastore,
 writes the version as the next boot entry and reboots. The new version boots
 with a limited number of tries. Its health gate (k3s and sshd active, the node
-Ready, all of it stable for 2 minutes, then the channel's signed `SHA256SUMS`
-fetched and verified) decides within 15 minutes. If it passes, the boot is
+Ready, the OS agent active and reporting during this boot, all of it stable for
+2 minutes, then the channel's signed `SHA256SUMS` fetched and verified) decides
+within 15 minutes. If it passes, the boot is
 blessed and the status moves to `done`. If it fails, the old version boots
 again, and before k3s starts, a fallback unit puts the datastore back.

@@ -157,7 +157,9 @@ func canon(s v1alpha1.DeviceStatus) string {
 func (r *Reconciler) writeStatus(ctx context.Context, dev *v1alpha1.Device) error {
 	want := r.desired()
 	now := r.now()
-	stale := dev.Status.Updated == nil || now.Sub(dev.Status.Updated.Time) >= usageOnlyWait
+	// An updated in the future means the clock went back: waiting for it would stop the writes.
+	stale := dev.Status.Updated == nil || now.Sub(dev.Status.Updated.Time) >= usageOnlyWait ||
+		now.Before(dev.Status.Updated.Time)
 	if !stale && canon(want) == canon(dev.Status) {
 		return nil
 	}

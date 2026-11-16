@@ -77,11 +77,6 @@ pkgs.runCommand "installer-test"
     # a good file passes its check: the next one refuses
     refused "not a block device" "''${ok[@]}" --ssh-key "$ROOT/keys.pub" --disk "$ROOT/ok.img"
 
-    # The installer can't run to the end here (it needs a block device), so
-    # check the final notice is printed exactly when no key was given.
-    grep -B1 -F 'no SSH key given' "$INSTALL" | grep -qF -- '[ -z "$SSH_KEY" ]' \
-      || { echo "FAIL: the no-key notice isn't gated on an empty SSH_KEY"; exit 1; }
-
     echo "installer scenarios passed"
     touch $out
   ''

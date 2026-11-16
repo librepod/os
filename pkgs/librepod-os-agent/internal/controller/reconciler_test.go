@@ -134,6 +134,17 @@ func TestUsageOnlyChangeWaitsFourMinutes(t *testing.T) {
 	}
 }
 
+func TestClockBackStillWrites(t *testing.T) {
+	e := newEnv(t, interceptor.Funcs{}, &v1alpha1.Device{ObjectMeta: metav1.ObjectMeta{Name: node}})
+	e.reconcile(t)
+	rv := e.device(t).ResourceVersion
+	e.now = e.now.Add(-time.Hour) // status.updated is now an hour ahead
+	e.reconcile(t)
+	if got := e.device(t).ResourceVersion; got == rv {
+		t.Fatal("not written after the clock went back")
+	}
+}
+
 func TestNeverWritesSpec(t *testing.T) {
 	spec := v1alpha1.DeviceSpec{Power: &v1alpha1.PowerSpec{ID: 5, Action: "reboot"}}
 	e := newEnv(t, interceptor.Funcs{}, &v1alpha1.Device{ObjectMeta: metav1.ObjectMeta{Name: node}, Spec: spec})

@@ -15,8 +15,6 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-const maxNumber = 999999999999999
-
 // valid: `<type> <base64 starting AAAA> [comment]` on one line, no options.
 func valid(k string) bool {
 	if strings.ContainsAny(k, "\r\n") {
@@ -60,7 +58,7 @@ func Adopt(path string) ([]string, error) {
 
 // Apply takes the owner's list once. A bad key rejects the whole answer.
 func Apply(spec *v1alpha1.SSHKeysSpec, st *state.Store) error {
-	if spec == nil || spec.Rev < 1 || spec.Rev > maxNumber || spec.Rev <= st.S.Last("sshKeys") {
+	if spec == nil || !st.S.Fresh("sshKeys", spec.Rev) {
 		return nil
 	}
 	if err := Validate(spec.Keys); err != nil {

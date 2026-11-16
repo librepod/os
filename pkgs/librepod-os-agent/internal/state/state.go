@@ -95,6 +95,14 @@ func (s *State) slot(section string) *int64 {
 // Last is the last number acted on for section.
 func (s *State) Last(section string) int64 { return *s.slot(section) }
 
+// maxNumber: above it, a JSON number stops being an exact integer.
+const maxNumber = 999999999999999
+
+// Fresh: n is a usable rev or id, above the last one acted on for section.
+func (s *State) Fresh(section string, n int64) bool {
+	return n >= 1 && n <= maxNumber && n > s.Last(section)
+}
+
 // Accept records n as handled and clears the section's rejection.
 func (s *State) Accept(section string, n int64) {
 	*s.slot(section) = n
