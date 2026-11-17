@@ -42,6 +42,10 @@ func run() error {
 		return err
 	}
 	node := strings.TrimSpace(string(host))
+	boot, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return err
+	}
 
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
@@ -93,6 +97,7 @@ func run() error {
 	}
 	r := &controller.Reconciler{
 		Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Node: node, Store: store, SetupCodeHash: hash,
+		BootID: strings.TrimSpace(string(boot)),
 		Paths: controller.Paths{
 			StatusJSON:     "/var/lib/librepod/updates/status.json",
 			TZDir:          tz,

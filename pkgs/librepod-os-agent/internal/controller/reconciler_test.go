@@ -228,6 +228,109 @@ func TestPowerRefusedShowsRejectedAtOnce(t *testing.T) {
 	}
 }
 
+func TestBootDropsWaitingPowerAndInstall(t *testing.T) {
+	spec := v1alpha1.DeviceSpec{
+		Power:   &v1alpha1.PowerSpec{ID: 5, Action: "poweroff"},
+		Install: &v1alpha1.InstallSpec{ID: 4, When: "now"},
+	}
+	e := newEnv(t, interceptor.Funcs{}, &v1alpha1.Device{ObjectMeta: metav1.ObjectMeta{Name: node}, Spec: spec})
+	e.r.Store.S.BootID, e.r.BootID = "boot-1", "boot-2"
+	var acts []string
+	e.r.Exec = func(a string) error { acts = append(acts, a); return nil }
+	var calls [][]string
+	e.r.Run = func(a ...string) error { calls = append(calls, a); return nil }
+	e.reconcile(t)
+	e.reconcile(t)
+	d := e.device(t)
+	if len(acts) != 0 || len(calls) != 0 {
+		t.Fatalf("acted: %v %v", acts, calls)
+	}
+	if d.Status.Handled.Power != 5 || d.Status.Handled.Install != 4 {
+		t.Fatalf("handled %+v", d.Status.Handled)
+	}
+	if got := d.Status.Rejected["power"]; got != "power id 5: the device restarted before it could act" {
+		t.Fatalf("rejected.power %q", got)
+	}
+	if got := d.Status.Rejected["install"]; got != "install id 4: the device restarted before it could act" {
+		t.Fatalf("rejected.install %q", got)
+	}
+	if st, err := state.Open(e.r.Store.Path); err != nil || st.S.BootID != "boot-2" {
+		t.Fatalf("saved boot ID %q %v", st.S.BootID, err)
+	}
+
+	// The owner clicks again in the same boot: that one is carried out.
+	d.Spec.Power = &v1alpha1.PowerSpec{ID: 6, Action: "reboot"}
+	if err := e.c.Update(context.Background(), d); err != nil {
+		t.Fatal(err)
+	}
+	e.reconcile(t)
+	if len(acts) != 1 || acts[0] != "reboot" {
+		t.Fatalf("acts %v", acts)
+	}
+	if got := e.device(t).Status.Rejected["power"]; got != "" {
+		t.Fatalf("rejected.power %q", got)
+	}
+}
+
+func TestSameBootStillActsOnWaitingPower(t *testing.T) {
+	spec := v1alpha1.DeviceSpec{Power: &v1alpha1.PowerSpec{ID: 5, Action: "reboot"}}
+	e := newEnv(t, interceptor.Funcs{}, &v1alpha1.Device{ObjectMeta: metav1.ObjectMeta{Name: node}, Spec: spec})
+	e.r.Store.S.BootID = "boot-1"
+	if err := e.r.Store.Save(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := state.Open(e.r.Store.Path) // the agent restarts
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.r.Store, e.r.BootID = st, "boot-1"
+	var acts []string
+	e.r.Exec = func(a string) error { acts = append(acts, a); return nil }
+	e.reconcile(t)
+	if len(acts) != 1 || acts[0] != "reboot" {
+		t.Fatalf("acts %v", acts)
+	}
+	if got := e.device(t).Status.Rejected["power"]; got != "" {
+		t.Fatalf("rejected.power %q", got)
+	}
+}
+
+func TestBootDropSaveFailureActsOnNothing(t *testing.T) {
+	spec := v1alpha1.DeviceSpec{Power: &v1alpha1.PowerSpec{ID: 5, Action: "reboot"}}
+	e := newEnv(t, interceptor.Funcs{}, &v1alpha1.Device{ObjectMeta: metav1.ObjectMeta{Name: node}, Spec: spec})
+	e.r.BootID = "boot-2"                                             // stored one is "": the first run of this agent version
+	e.r.Store.Path = filepath.Join(e.dir, "os-release", "state.json") // a file in the way
+	e.r.Store.S.SSHKeys = []string{}                                  // adopted, so that save isn't the one failing
+	var acts []string
+	e.r.Exec = func(a string) error { acts = append(acts, a); return nil }
+	if _, err := e.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: node}}); err == nil {
+		t.Fatal("no error")
+	}
+	if len(acts) != 0 {
+		t.Fatalf("acts %v", acts)
+	}
+}
+
+func TestBootChangeKeepsHandledAnswers(t *testing.T) {
+	spec := v1alpha1.DeviceSpec{Power: &v1alpha1.PowerSpec{ID: 5, Action: "reboot"}}
+	e := newEnv(t, interceptor.Funcs{}, &v1alpha1.Device{ObjectMeta: metav1.ObjectMeta{Name: node}, Spec: spec})
+	e.r.Store.S.Handled.Power = 5
+	e.r.Store.S.Rejected = map[string]string{"power": "power id 5: an update is installing"}
+	e.r.BootID = "boot-2"
+	var acts []string
+	e.r.Exec = func(a string) error { acts = append(acts, a); return nil }
+	e.reconcile(t)
+	if len(acts) != 0 {
+		t.Fatalf("acts %v", acts)
+	}
+	if got := e.device(t).Status.Rejected["power"]; got != "power id 5: an update is installing" {
+		t.Fatalf("rejected.power %q", got)
+	}
+	if e.r.Store.S.BootID != "boot-2" {
+		t.Fatalf("boot ID %q", e.r.Store.S.BootID)
+	}
+}
+
 func TestAdoptsInstallersKeysOnceThenOwnsList(t *testing.T) {
 	e := newEnv(t, interceptor.Funcs{}, &v1alpha1.Device{ObjectMeta: metav1.ObjectMeta{Name: node}})
 	const k = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl me"
@@ -289,9 +392,13 @@ func TestStatusIsReplacedNotMergePatched(t *testing.T) {
 func TestLiveReadErrorTouchesNothing(t *testing.T) {
 	e := newEnv(t, interceptor.Funcs{}, &v1alpha1.Device{ObjectMeta: metav1.ObjectMeta{Name: node}})
 	e.r.Reader = failingReader{}
+	e.r.BootID = "boot-2"
 	_ = os.WriteFile(e.r.Paths.AuthorizedKeys, []byte("console edit\n"), 0o644)
 	if _, err := e.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: node}}); err == nil {
 		t.Fatal("no error")
+	}
+	if e.r.Store.S.BootID != "" {
+		t.Fatalf("boot ID recorded without the Device: %q", e.r.Store.S.BootID)
 	}
 	if b, _ := os.ReadFile(e.r.Paths.AuthorizedKeys); string(b) != "console edit\n" {
 		t.Fatalf("key file changed: %q", b)
