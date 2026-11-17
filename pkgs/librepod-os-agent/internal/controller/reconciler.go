@@ -44,7 +44,9 @@ type Reconciler struct {
 	Exec func(action string) error
 	// SetupCodeHash is the bcrypt hash of the sticker's code, "" without one.
 	SetupCodeHash string
-	Now           func() time.Time
+	// BootID is the kernel's ID of this boot.
+	BootID string
+	Now    func() time.Time
 }
 
 func (r *Reconciler) now() time.Time {
@@ -70,6 +72,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 		return ctrl.Result{Requeue: true}, nil
 	}
 	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.dropAfterBoot(dev.Spec); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -117,6 +122,25 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+}
+
+// dropAfterBoot rejects the power and install answers still waiting at the
+// first run after a boot: an answer that outlived a boot is no longer the
+// owner's click. The new boot ID is saved with the rejections, so a crash
+// before that write drops them again.
+func (r *Reconciler) dropAfterBoot(spec v1alpha1.DeviceSpec) error {
+	if r.Store.S.BootID == r.BootID {
+		return nil
+	}
+	const why = "the device restarted before it could act"
+	if p := spec.Power; p != nil && r.Store.S.Fresh("power", p.ID) {
+		r.Store.S.Reject("power", p.ID, why)
+	}
+	if i := spec.Install; i != nil && r.Store.S.Fresh("install", i.ID) {
+		r.Store.S.Reject("install", i.ID, why)
+	}
+	r.Store.S.BootID = r.BootID
+	return r.Store.Save()
 }
 
 func (r *Reconciler) desired() v1alpha1.DeviceStatus {

@@ -18,6 +18,8 @@ type State struct {
 	Rejected map[string]string `json:"rejected,omitempty"`
 	// SSHKeys is nil until the installer's keys are adopted.
 	SSHKeys []string `json:"sshKeys"`
+	// BootID is the kernel boot ID of the last run that read the Device.
+	BootID string `json:"bootID,omitempty"`
 }
 
 type Store struct {
