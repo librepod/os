@@ -155,6 +155,10 @@ Onboarding writes it, and so does every later change, all four fields each time.
   next night window). It names no version. The owner's click also retries a
   version in `failedVersions`; automatic updates never do. With automatic
   updates off, nothing installs by itself.
+- An answer (`now` or `tonight`) still waiting at the agent's first run after
+  a boot is dropped: `status.rejected.install` says `the device restarted
+  before it could act`, and it counts as handled. An agent restart without a
+  boot still acts on it.
 
 ### `spec.power`
 
@@ -167,6 +171,11 @@ spec:
 - `action`: `reboot` or `poweroff`.
 - Refused while an update is installing: `status.rejected.power` says
   `an update is installing`, and the answer counts as handled.
+- An answer still waiting at the agent's first run after a boot is dropped the
+  same way: `status.rejected.power` says `the device restarted before it could
+  act`. The boot already happened: a reboot is done, and a power off was
+  overruled by whoever switched the device back on. An agent restart without
+  a boot still acts on it.
 - The agent saves the `id` before it acts, so a restart in between never
   repeats it. A lost click beats a repeated one: if the device did not go down,
   send a new `id`.
@@ -208,6 +217,9 @@ counts as handled, with the reason in `status.rejected.<section>`:
 - `updates`: `the time zone is unknown` (the schema refuses a bad channel).
   Nothing from that answer is applied.
 - `install`: `when is not now or tonight`.
+
+A `power` or `install` answer still waiting at the agent's first run after a
+boot is rejected the same way: `the device restarted before it could act`.
 
 For example `updates rev 4: the time zone is unknown`. Send a corrected answer
 under a higher number.
