@@ -218,11 +218,11 @@ counts as handled, with the reason in `status.rejected.<section>`:
   Nothing from that answer is applied.
 - `install`: `when is not now or tonight`.
 
-A `power` or `install` answer still waiting at the agent's first run after a
-boot is rejected the same way: `the device restarted before it could act`.
-
 For example `updates rev 4: the time zone is unknown`. Send a corrected answer
 under a higher number.
+
+A `power` or `install` answer still waiting at the agent's first run after a
+boot is rejected the same way: `the device restarted before it could act`.
 
 ## The CLI
 
