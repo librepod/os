@@ -1,6 +1,8 @@
 # checks/image-e2e/default.nix — librepod-install writes the appliance image,
-# k3s included, to an OS disk and a recycled data disk; it refuses USB, mounted
-# and partition targets, and existing LibrePod data unless told --keep-data.
+# k3s included, to an OS disk, a recycled data disk and a blank backup disk; it
+# refuses USB, mounted and partition targets, existing LibrePod data or backups
+# unless told --keep-* or --wipe-*, a disk holding the other role's partition,
+# and leaving out a backup disk that holds backups. Root records both disks.
 # The installed disk boots by its UEFI entry with root grown to the disk, and
 # keeps its identity outside Nix: the hostname comes from /etc/hostname, SSH
 # takes only the key the installer wrote, the generic login works at the
@@ -110,7 +112,7 @@ hostPkgs.testers.runNixOSTest {
   # The k3s overlay in imageModules
   node.pkgsReadOnly = false;
 
-  # The bench: a live system booted through UEFI, with the device's two disks
+  # The bench: a live system booted through UEFI, with the device's three disks
   # and a USB stick.
   nodes.installer =
     { pkgs, ... }:
@@ -122,6 +124,8 @@ hostPkgs.testers.runNixOSTest {
           "-device virtio-blk-pci,serial=os,drive=os"
           "-drive if=none,id=data,format=qcow2,file=$DATA_DISK"
           "-device nvme,serial=data,drive=data"
+          "-drive if=none,id=backup,format=qcow2,file=$BACKUP_DISK"
+          "-device nvme,serial=backup,drive=backup"
           "-device qemu-xhci,id=xhci"
           "-drive if=none,id=usb,format=qcow2,file=$USB_DISK"
           "-device usb-storage,bus=xhci.0,serial=usb,drive=usb"
@@ -315,17 +319,24 @@ hostPkgs.testers.runNixOSTest {
       os.environ["OS_DISK"] = disk("${foreignDisk}", "24G")
       os.environ["DATA_DISK"] = disk("${foreignDisk}", "2G")  # a recycled disk
       os.environ["USB_DISK"] = disk()
+      os.environ["BACKUP_DISK"] = disk()
       installer.start()
       server.start()  # before NIX_DISK_IMAGE points at the OS disk, below
       installer.wait_for_unit("multi-user.target")
 
       def dev(serial):  # kernel path of the disk with this serial
           return installer.succeed(f"lsblk -dnpo PATH,SERIAL | awk '$2==\"{serial}\" {{print $1}}'").strip()
-      os_, data = dev("os"), dev("data")
+      os_, data, backup = dev("os"), dev("data"), dev("backup")
       inst = "librepod-install --image ${m.system.build.releaseFiles}/librepod-vm_0.5.0.raw.zst --name pod-image --disk {disk} --data-disk {data} {flags}"
+      def partuuid(disk, label):
+          return installer.succeed(f"udevadm settle && lsblk -nro PARTLABEL,PARTUUID {disk} | awk '$1==\"{label}\" {{print $2}}'").strip()
+      def recorded(name):  # /etc/librepod/<name> on the installed root
+          root = installer.succeed(f"lsblk -nrpo PATH,PARTLABEL {os_} | awk '$2==\"librepod-root\" {{print $1}}'").strip()
+          return installer.succeed(f"mkdir -p /mnt && mount {root} /mnt && cat /mnt/etc/librepod/{name} && umount /mnt").strip()
 
       with subtest("refusals: USB, mounted, a partition, held by device-mapper"):
           installer.fail(inst.format(disk=os_, data=dev("usb"), flags=""))
+          installer.fail(inst.format(disk=os_, data=data, flags=f"--backup-disk {dev('usb')}"))
           installer.fail(inst.format(disk=dev("root"), data=data, flags=""))  # the installer's own
           installer.fail(inst.format(disk=os_ + "1", data=data, flags=""))
           # an old LVM the live system activated: in use, though nothing is mounted
@@ -335,16 +346,30 @@ hostPkgs.testers.runNixOSTest {
           installer.succeed("dmsetup remove held")
           installer.fail("efibootmgr | grep LibrePod")
 
-      with subtest("install; the data disk is ours"):
-          out = installer.succeed(inst.format(disk=os_, data=data, flags=""))  # recycled disk: no flag needed
+      with subtest("install; the data and backup disks are ours"):
+          # recycled and blank disks: no flag needed
+          out = installer.succeed(inst.format(disk=os_, data=data, flags=f"--backup-disk {backup}"))
           code = out.strip().splitlines()[-1].split()[-1]  # "... setup code XXXX-XXXX-XXXX", the sticker's
           installer.succeed(f"mkdir -p /mnt && mount {data}p1 /mnt && touch /mnt/marker && umount /mnt")
+          backup_id = partuuid(backup, "librepod-backup")
+          assert backup_id and recorded("backup-partuuid") == backup_id, (backup_id, recorded("backup-partuuid"))
 
-      with subtest("existing data: refused without a flag, kept with --keep-data"):
-          out = installer.fail(inst.format(disk=os_, data=data, flags="") + " 2>&1")
+      with subtest("existing data and backups: refused without a flag or on the wrong disk, kept with --keep-*"):
+          out = installer.fail(inst.format(disk=os_, data=data, flags=f"--backup-disk {backup}") + " 2>&1")
           assert "--keep-data" in out and "--wipe-data" in out, out
+          out = installer.fail(inst.format(disk=os_, data=data, flags=f"--backup-disk {backup} --keep-data") + " 2>&1")
+          assert "--keep-backup" in out and "--wipe-backup" in out, out
+          # swapped disks: no flag formats one role's disk as the other's
+          out = installer.fail(inst.format(disk=os_, data=backup, flags=f"--backup-disk {data} --wipe-data --wipe-backup") + " 2>&1")
+          assert "can't be the data disk" in out, out
+          out = installer.fail(inst.format(disk=data, data=backup, flags="--wipe-data") + " 2>&1")
+          assert "can't be the os disk" in out, out
+          # left out, the backup disk would drop off root
+          out = installer.fail(inst.format(disk=os_, data=data, flags="--keep-data") + " 2>&1")
+          assert f"LibrePod backups on {backup}" in out, out
           # a reinstall keeps the sticker's code, typed as printed or not
-          installer.succeed(inst.format(disk=os_, data=data, flags=f"--keep-data --setup-code {code.lower()} --ssh-key ${sshPub}"))
+          installer.succeed(inst.format(disk=os_, data=data, flags=f"--backup-disk {backup} --keep-data --keep-backup --setup-code {code.lower()} --ssh-key ${sshPub}"))
+          assert recorded("backup-partuuid") == backup_id, recorded("backup-partuuid")
       installer.shutdown()
 
       def serve(channel, repo):

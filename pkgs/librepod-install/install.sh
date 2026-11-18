@@ -25,7 +25,8 @@ while [ $# -gt 0 ]; do
     --name) [ $# -ge 2 ] || usage; NAME="$2"; shift 2;;
     --disk) [ $# -ge 2 ] || usage; DISK="$2"; shift 2;;
     --data-disk) [ $# -ge 2 ] || usage; DATA_DISK="$2"; shift 2;;
-    --backup-disk) [ $# -ge 2 ] || usage; BACKUP_DISK="$2"; shift 2;;
+    # Empty would mean "no backup disk": an unset variable must not drop it.
+    --backup-disk) [ $# -ge 2 ] && [ -n "$2" ] || usage; BACKUP_DISK="$2"; shift 2;;
     # Empty would mean "mint one": an unset variable must not orphan a sticker.
     --setup-code) [ $# -ge 2 ] && [ -n "$2" ] || usage; SETUP_CODE="$2"; shift 2;;
     --ssh-key) [ $# -ge 2 ] && [ -n "$2" ] || usage; SSH_KEY="$2"; shift 2;;
@@ -35,6 +36,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$IMAGE" ] && [ -n "$NAME" ] || usage
+[ -z "$BACKUP" ] || [ -n "$BACKUP_DISK" ] || die "--$BACKUP needs --backup-disk"
 
 # Every check before the first write.
 # Hostname and k8s node name.
@@ -82,23 +84,38 @@ for d in "$DISK" "$DATA_DISK" ${BACKUP_DISK:+"$BACKUP_DISK"}; do
   [ -z "$(lsblk -nro TYPE "$d" | grep -vxE 'disk|part' || true)" ] \
     || die "$d is in use (LVM, RAID or encryption): stop it first, e.g. vgchange -an"
 done
-[ "$(realpath "$DISK")" != "$(realpath "$DATA_DISK")" ] || die "--disk and --data-disk are the same disk"
-if [ -n "$BACKUP_DISK" ]; then
-  [ "$(realpath "$DISK")" != "$(realpath "$BACKUP_DISK")" ] || die "--disk and --backup-disk are the same disk"
-  [ "$(realpath "$DATA_DISK")" != "$(realpath "$BACKUP_DISK")" ] || die "--data-disk and --backup-disk are the same disk"
-fi
+[ -z "$(realpath "$DISK" "$DATA_DISK" ${BACKUP_DISK:+"$BACKUP_DISK"} | sort | uniq -d)" ] \
+  || die "--disk, --data-disk and --backup-disk must be different disks"
 [ -d /sys/firmware/efi/efivars ] || die "not booted through UEFI: the boot entry can't be written"
-DATA_PARTS=$(lsblk -nro PARTLABEL "$DATA_DISK" | grep -cx librepod-data || true)
-case "$DATA" in
-  "") [ "$DATA_PARTS" = 0 ] || die "$DATA_DISK holds LibrePod data: pass --keep-data or --wipe-data";;
-  keep-data) [ "$DATA_PARTS" = 1 ] || die "--keep-data: $DATA_DISK has $DATA_PARTS librepod-data partitions, not 1";;
-esac
+# A disk may hold only its own role's LibrePod partition, and formats it only
+# when told: a swapped or mistyped disk is refused before its data or backups
+# are lost. Prints the partition UUID to record: the kept one's, or a new one.
+claim() { # disk, role (os, data or backup), --keep-/--wipe- choice
+  local role n uuid=""
+  for role in data backup; do
+    n=$(lsblk -nro PARTLABEL "$1" | grep -cx "librepod-$role" || true)
+    if [ "$role" != "$2" ]; then
+      [ "$n" = 0 ] || die "$1 holds LibrePod $role, so it can't be the $2 disk: check the disk flags (to reuse it, wipe it first)"
+    elif [ "$3" = "keep-$role" ]; then
+      [ "$n" = 1 ] || die "--keep-$role: $1 has $n librepod-$role partitions, not 1"
+      uuid=$(lsblk -nro PARTLABEL,PARTUUID "$1" | awk -v l="librepod-$role" '$1 == l { print $2 }')
+      [ -n "$uuid" ] || die "--keep-$role: no PARTUUID for the librepod-$role partition on $1"
+    elif [ -z "$3" ]; then
+      [ "$n" = 0 ] || die "$1 holds LibrePod $role: pass --keep-$role or --wipe-$role"
+    fi
+  done
+  [ "$2" = os ] || echo "${uuid:-$(cat /proc/sys/kernel/random/uuid)}"
+}
+claim "$DISK" os ""
+# die exits claim's subshell; the failed assignment then stops the script.
+DATA_UUID=$(claim "$DATA_DISK" data "$DATA")
+BACKUP_UUID=""
 if [ -n "$BACKUP_DISK" ]; then
-  BACKUP_PARTS=$(lsblk -nro PARTLABEL "$BACKUP_DISK" | grep -cx librepod-backup || true)
-  case "$BACKUP" in
-    "") [ "$BACKUP_PARTS" = 0 ] || die "$BACKUP_DISK holds LibrePod backups: pass --keep-backup or --wipe-backup";;
-    keep-backup) [ "$BACKUP_PARTS" = 1 ] || die "--keep-backup: $BACKUP_DISK has $BACKUP_PARTS librepod-backup partitions, not 1";;
-  esac
+  BACKUP_UUID=$(claim "$BACKUP_DISK" backup "$BACKUP")
+else
+  # Left out, a backup disk the device has would drop off root unnoticed.
+  HELD=$(lsblk -nrpo PARTLABEL,PKNAME | awk '$1 == "librepod-backup" { printf " %s", $2 }')
+  [ -z "$HELD" ] || die "LibrePod backups on$HELD: pass --backup-disk with --keep-backup or --wipe-backup (to drop the disk, wipe it first)"
 fi
 
 echo "==> writing $IMAGE to $DISK"
@@ -125,40 +142,24 @@ udevadm settle
 e2fsck -fp "$ROOT" || [ $? -le 1 ] # 1: errors corrected
 resize2fs "$ROOT"
 
-if [ "$DATA" = keep-data ]; then
-  echo "==> keeping the data on $DATA_DISK"
-  DATA_UUID=$(lsblk -nro PARTLABEL,PARTUUID "$DATA_DISK" | awk '$1 == "librepod-data" { print $2 }')
-else
-  echo "==> formatting $DATA_DISK"
-  DATA_UUID=$(cat /proc/sys/kernel/random/uuid)
-  wipefs -aq "$DATA_DISK"
-  sgdisk -Z "$DATA_DISK" >/dev/null
-  sgdisk -n1:0:0 -t1:8300 -u1:"$DATA_UUID" "$DATA_DISK" >/dev/null
-  partx -u "$DATA_DISK"
+provision() { # disk, role (data or backup), --keep-/--wipe- choice, partition UUID
+  if [ "$3" = "keep-$2" ]; then
+    echo "==> keeping the $2 on $1"
+    return
+  fi
+  echo "==> formatting $1 as the $2 disk"
+  wipefs -aq "$1"
+  sgdisk -Z "$1" >/dev/null
+  sgdisk -n1:0:0 -t1:8300 -u1:"$4" "$1" >/dev/null
+  partx -u "$1"
   udevadm settle
   # -F: always format; stale signatures must not skip it
-  mkfs.ext4 -qF "$(lsblk -nrpo PATH,PARTN "$DATA_DISK" | awk '$2 == 1 { print $1 }')"
-  # Labelled last: an interrupted format leaves no LibrePod data to keep.
-  sgdisk -c1:librepod-data "$DATA_DISK" >/dev/null
-fi
-BACKUP_UUID=""
-if [ -n "$BACKUP_DISK" ]; then
-  if [ "$BACKUP" = keep-backup ]; then
-    echo "==> keeping the backups on $BACKUP_DISK"
-    BACKUP_UUID=$(lsblk -nro PARTLABEL,PARTUUID "$BACKUP_DISK" | awk '$1 == "librepod-backup" { print $2 }')
-  else
-    echo "==> formatting $BACKUP_DISK as the backup disk"
-    BACKUP_UUID=$(cat /proc/sys/kernel/random/uuid)
-    wipefs -aq "$BACKUP_DISK"
-    sgdisk -Z "$BACKUP_DISK" >/dev/null
-    sgdisk -n1:0:0 -t1:8300 -u1:"$BACKUP_UUID" "$BACKUP_DISK" >/dev/null
-    partx -u "$BACKUP_DISK"
-    udevadm settle
-    # -F and label-last for the same reasons as the data disk.
-    mkfs.ext4 -qF "$(lsblk -nrpo PATH,PARTN "$BACKUP_DISK" | awk '$2 == 1 { print $1 }')"
-    sgdisk -c1:librepod-backup "$BACKUP_DISK" >/dev/null
-  fi
-fi
+  mkfs.ext4 -qF "$(lsblk -nrpo PATH,PARTN "$1" | awk '$2 == 1 { print $1 }')"
+  # Labelled last: an interrupted format leaves nothing to keep.
+  sgdisk -c1:"librepod-$2" "$1" >/dev/null
+}
+provision "$DATA_DISK" data "$DATA" "$DATA_UUID"
+[ -z "$BACKUP_DISK" ] || provision "$BACKUP_DISK" backup "$BACKUP" "$BACKUP_UUID"
 
 echo "==> writing $NAME${SSH_KEY:+, its SSH key}, its data${BACKUP_DISK:+ and backup} disk(s) and setup code to root"
 MNT=$(mktemp -d)
@@ -167,7 +168,7 @@ umask 022 # sshd's StrictModes refuses keys under a group-writable /etc or /etc/
 mkdir -p "$MNT/etc/librepod"
 echo "$NAME" > "$MNT/etc/hostname"
 echo "$DATA_UUID" > "$MNT/etc/librepod/data-partuuid"
-[ -n "$BACKUP_UUID" ] && echo "$BACKUP_UUID" > "$MNT/etc/librepod/backup-partuuid"
+[ -z "$BACKUP_DISK" ] || echo "$BACKUP_UUID" > "$MNT/etc/librepod/backup-partuuid"
 install -d -m 700 "$MNT/var/lib/librepod"
 (umask 077 && echo "$SETUP_CODE" > "$MNT/var/lib/librepod/setup-code")
 if [ -n "$SSH_KEY" ]; then
