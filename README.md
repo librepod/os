@@ -108,8 +108,11 @@ Provision a device from a live USB booted through UEFI with `librepod-install
 --image librepod_1.raw.zst --name pod-1` (`--disk`, default `/dev/nvme0n1`;
 `--data-disk`, default `/dev/sda`). It writes the appliance image, the name and
 the `LibrePod` boot entry; a data disk that already holds LibrePod data needs
-`--keep-data` or `--wipe-data`. The installer also mints the device's setup
-code, the claim code for the Marketplace setup wizard. It goes on the sticker;
+`--keep-data` or `--wipe-data`. An optional backup disk (`--backup-disk`, e.g.
+the SATA drive beside two NVMe ones) works the same way with `--keep-backup` or
+`--wipe-backup`, and a reinstall must name it again while it holds backups. A
+disk holding the other role's LibrePod partition is refused, flags or not.
+The installer also mints the device's setup code, the claim code for the Marketplace setup wizard. It goes on the sticker;
 the last line prints it with the device's address, `http://<name>.local`.
 `--setup-code XXXX-XXXX-XXXX` keeps a code already printed, e.g. on a
 reinstall. The code lives in `/var/lib/librepod/setup-code` (root-only) and

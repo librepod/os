@@ -9,6 +9,10 @@
 #   (installer, phase 3)
 # - data disk: one GPT partition labelled librepod-data, ext4, found by that
 #   UUID: PVs at /mnt/k3s (modules/data-disk)
+# - /etc/librepod/backup-partuuid: the backup partition's GPT UUID and a
+#   newline, only on a device with a backup disk (installer, --backup-disk)
+# - backup disk: one GPT partition labelled librepod-backup, ext4, found by
+#   that UUID; nothing mounts it yet
 # - /var/lib/librepod/setup-code: the sticker's claim code, root-only
 #   (installer; the OS agent publishes its bcrypt hash in the Device)
 # - /etc/ssh/authorized_keys.d/librepod: SSH public keys, root's, 0644
