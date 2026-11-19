@@ -2,7 +2,8 @@ set -euo pipefail
 
 # Dynamic source directory generator for borgmatic
 #
-# Queries Kubernetes for all PVCs (excluding those labeled
+# Queries Kubernetes for the PVCs to back up (backup-pvcs.jq: nfs-client,
+# skipping a PVC when it or its namespace is labeled
 # backup.libre.pod/disabled=true) and resolves their NFS filesystem paths
 # via the bound PV's spec.nfs.path.
 # Generates /run/borgmatic/sources.yaml with a source_directories list
@@ -14,8 +15,6 @@ set -euo pipefail
 
 # Configuration
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-STORAGE_CLASS=nfs-client
-SKIP_LABEL=backup.libre.pod/disabled
 OUTPUT_FILE=/run/borgmatic/sources.yaml
 
 # Logging functions
@@ -29,14 +28,13 @@ log_error() {
 
 log_info "Generating dynamic backup source list..."
 
-# Query all PVCs with matching storage class, excluding those with the skip label
+# PVCs to back up, from one snapshot of namespaces and PVCs (PVC_FILTER = backup-pvcs.jq)
 # Output format: namespace pvc_name volume_name (one per line)
-pvc_list=$(k3s kubectl get pvc -A -o json 2>/dev/null | jq -r '
-  .items[] |
-  select(.spec.storageClassName == "'"$STORAGE_CLASS"'") |
-  select((.metadata.labels["'"$SKIP_LABEL"'"] // "") != "true") |
-  "\(.metadata.namespace) \(.metadata.name) \(.spec.volumeName // "")"
-' 2>/dev/null || true)
+# Any kubectl error means no PVCs: a partial list may lack the namespaces and ignore their opt-outs.
+pvc_list=$(k3s kubectl get ns,pvc -A -o json 2>/dev/null | jq -r -f "$PVC_FILTER" 2>/dev/null) || {
+  log_error "Could not list namespaces and PVCs; backing up none this run"
+  pvc_list=""
+}
 
 sources=()
 

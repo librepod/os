@@ -1,7 +1,8 @@
 # Borgmatic backup module with FluxCD integration
 #
 # This module configures borgmatic for automated nightly backups of k3s PVC data.
-# All PVCs are backed up by default; label `backup.libre.pod/disabled=true` to skip.
+# All PVCs are backed up by default; label a PVC or its Namespace
+# `backup.libre.pod/disabled=true` to skip.
 # Borg's content-addressed storage enables per-PVC restore via path-based extraction
 # without requiring separate backup jobs per PVC.
 #
@@ -20,7 +21,8 @@
 # full SSA field-ownership explanation.
 #
 # Dynamic source directories:
-#   A generate-sources script queries k8s for labeled PVCs, resolves their NFS paths
+#   A generate-sources script queries k8s for the PVCs to back up (see
+#   scripts/backup-pvcs.jq, shared with pre-backup), resolves their NFS paths
 #   via the bound PV's spec.nfs.path, and writes them to /run/borgmatic/sources.yaml.
 #   The base borgmatic config includes this file via <<: !include (deep merge).
 #   Because pkgs.formats.yaml cannot produce the custom <<: !include YAML tag,
@@ -28,6 +30,9 @@
 #
 # To skip a PVC from backup:
 #   kubectl label pvc <pvc-name> -n <namespace> backup.libre.pod/disabled=true
+#
+# To skip every PVC in a namespace (e.g. PVCs a controller creates at runtime):
+#   kubectl label ns <namespace> backup.libre.pod/disabled=true
 #
 # To restore a specific PVC:
 #   borgmatic extract --archive latest --restore-path exports/k3s/<namespace>/<pvc-name>/
@@ -71,7 +76,7 @@ let
       jq
       coreutils
     ];
-    text = builtins.readFile ./scripts/generate-sources.sh;
+    text = "PVC_FILTER=${./scripts/backup-pvcs.jq}\n" + builtins.readFile ./scripts/generate-sources.sh;
   };
 
   preBackupScript = pkgs.writeShellApplication {
@@ -82,7 +87,7 @@ let
       jq
       coreutils
     ];
-    text = builtins.readFile ./scripts/pre-backup.sh;
+    text = "PVC_FILTER=${./scripts/backup-pvcs.jq}\n" + builtins.readFile ./scripts/pre-backup.sh;
   };
 
   postBackupScript = pkgs.writeShellApplication {

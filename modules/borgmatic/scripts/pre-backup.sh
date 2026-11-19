@@ -13,8 +13,6 @@ set -euo pipefail
 
 # Configuration
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-STORAGE_CLASS=nfs-client
-SKIP_LABEL=backup.libre.pod/disabled
 
 # Logging functions
 log_info() {
@@ -64,19 +62,19 @@ fi
 # Query PVCs from Kubernetes API to get correct PVC names
 log_info "Scaling down deployments using PVCs..."
 
-# Get PVCs using the configured storage class, excluding those with the skip label.
+# The PVCs to back up (PVC_FILTER = backup-pvcs.jq, shared with generate-sources):
+# PVCs labeled backup.libre.pod/disabled=true, or in a namespace so labeled, are skipped.
 # Only deployments using these PVCs are scaled down — skipped apps stay running.
-pvc_list=$(k3s kubectl get pvc -A -o json 2>/dev/null | jq -r "
-  .items[] |
-  select(.spec.storageClassName == \"$STORAGE_CLASS\") |
-  select((.metadata.labels[\"$SKIP_LABEL\"] // \"\") != \"true\") |
-  \"\(.metadata.namespace) \(.metadata.name)\"
-" || true)
+# Any kubectl error means no PVCs: a partial list may lack the namespaces and ignore their opt-outs.
+pvc_list=$(k3s kubectl get ns,pvc -A -o json 2>/dev/null | jq -r -f "$PVC_FILTER") || {
+  log_error "Could not list namespaces and PVCs; scaling none down"
+  pvc_list=""
+}
 
 if [ -n "$pvc_list" ]; then
   scaled_count=0
 
-  while read -r pvc_namespace pvc_name; do
+  while read -r pvc_namespace pvc_name _; do
     [ -z "$pvc_namespace" ] && continue
     [ -z "$pvc_name" ] && continue
 
@@ -117,7 +115,7 @@ if [ -n "$pvc_list" ]; then
 
   log_info "Scaled down $scaled_count deployments"
 else
-  log_info "No PVCs found with $STORAGE_CLASS storage class"
+  log_info "No PVCs to back up"
 fi
 
 log_info "Pre-backup script completed successfully"

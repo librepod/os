@@ -1,0 +1,4 @@
+media photos pv-photos
+media pending
+sandboxes-archive logs pv-logs
+tools db pv-db

@@ -1,0 +1,16 @@
+{
+  "kind": "List",
+  "items": [
+    { "kind": "Namespace", "metadata": { "name": "media" } },
+    { "kind": "Namespace", "metadata": { "name": "sandboxes", "labels": { "backup.libre.pod/disabled": "true" } } },
+    { "kind": "Namespace", "metadata": { "name": "sandboxes-archive" } },
+    { "kind": "Namespace", "metadata": { "name": "tools", "labels": { "backup.libre.pod/disabled": "false" } } },
+    { "kind": "PersistentVolumeClaim", "metadata": { "name": "photos", "namespace": "media" }, "spec": { "storageClassName": "nfs-client", "volumeName": "pv-photos" } },
+    { "kind": "PersistentVolumeClaim", "metadata": { "name": "cache", "namespace": "media", "labels": { "backup.libre.pod/disabled": "true" } }, "spec": { "storageClassName": "nfs-client", "volumeName": "pv-cache" } },
+    { "kind": "PersistentVolumeClaim", "metadata": { "name": "scratch", "namespace": "media" }, "spec": { "storageClassName": "local-path", "volumeName": "pv-scratch" } },
+    { "kind": "PersistentVolumeClaim", "metadata": { "name": "pending", "namespace": "media" }, "spec": { "storageClassName": "nfs-client" } },
+    { "kind": "PersistentVolumeClaim", "metadata": { "name": "step-1", "namespace": "sandboxes" }, "spec": { "storageClassName": "nfs-client", "volumeName": "pv-step-1" } },
+    { "kind": "PersistentVolumeClaim", "metadata": { "name": "logs", "namespace": "sandboxes-archive" }, "spec": { "storageClassName": "nfs-client", "volumeName": "pv-logs" } },
+    { "kind": "PersistentVolumeClaim", "metadata": { "name": "db", "namespace": "tools" }, "spec": { "storageClassName": "nfs-client", "volumeName": "pv-db" } }
+  ]
+}

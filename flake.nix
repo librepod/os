@@ -388,6 +388,19 @@
             assert got == want || throw "an installed device would change: ${got}, expected ${want}";
             pkgs.runCommand "installed-device" { } "touch $out";
 
+          # Which PVCs borgmatic backs up and scales down (one filter for both scripts).
+          borgmatic-pvcs =
+            let
+              filter = ./modules/borgmatic/scripts/backup-pvcs.jq;
+            in
+            pkgs.runCommand "borgmatic-pvcs" { nativeBuildInputs = [ pkgs.jq ]; } ''
+              # -Z: an unbound PVC's line ends with an empty volumeName
+              jq -r -f ${filter} ${./checks/borgmatic-pvcs/input.json} | diff -u -Z ${./checks/borgmatic-pvcs/expected.txt} -
+              # k3s down: empty input, no output
+              [ -z "$(jq -r -f ${filter} < /dev/null)" ]
+              touch $out
+            '';
+
           image-updater-test = pkgs.callPackage ./checks/image-updater-test.nix { };
           image-health-test = pkgs.callPackage ./checks/image-health-test.nix { };
           installer-test = pkgs.callPackage ./checks/installer-test.nix { };
