@@ -30,6 +30,10 @@ if [ -f "$STATE_FILE" ]; then
     exit 1
   }
 fi
+# Create it before suspending Flux: it is also the recovery trigger, and a
+# reboot after the suspend but before any scale-down (or with nothing to
+# scale) must still resume Flux at boot.
+touch "$STATE_FILE"
 
 log_info "Starting pre-backup script..."
 
@@ -113,8 +117,10 @@ if [ -n "$pvc_list" ]; then
         fi
 
         log_info "Scaling down: $namespace/$name (replicas $replicas -> 0)"
+        # Record before scaling: a crash in between must not lose the count.
+        # If the scale fails, restoring the current count is a no-op.
+        echo "$namespace $name $replicas" >> "$STATE_FILE"
         if timeout 60 k3s kubectl scale deployment "$name" -n "$namespace" --replicas=0 2>/dev/null; then
-          echo "$namespace $name $replicas" >> "$STATE_FILE"
           scaled_count=$((scaled_count + 1))
 
           # Wait for the scale-down to complete before the backup reads the PVC.
