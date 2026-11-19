@@ -77,12 +77,13 @@ in
       enable = true;
       # Ceilings, not fixed delays: kubelet releases the systemd inhibitor as
       # soon as pods are down. Generous so slow marketplace apps fit inside
-      # the window instead of being force-killed.
-      shutdownGracePeriod = "60s";
-      shutdownGracePeriodCriticalPods = "20s";
+      # the window instead of being force-killed. mkDefault: fleet policy
+      # values — devices may override with a plain assignment.
+      shutdownGracePeriod = lib.mkDefault "60s";
+      shutdownGracePeriodCriticalPods = lib.mkDefault "20s";
     };
     # Auto-deploy charts for K3S
-    # https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/services/cluster/k3s/default.nix
+    # https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/services/cluster/rancher/default.nix
     autoDeployCharts = {
       flux-operator = mkAutoDeployChart (import ./charts/flux-operator.nix);
       flux-instance = mkAutoDeployChart (import ./charts/flux-instance.nix);
@@ -91,9 +92,23 @@ in
 
   # kubelet's graceful node shutdown holds a systemd "delay" inhibitor while
   # it stops pods; logind waits at most InhibitDelayMaxSec (default: 5s) for
-  # it. Must be >= shutdownGracePeriod above or the window is cut short.
+  # it. Derived from the k3s grace period so the two cannot drift: if the
+  # requested window exceeded logind's limit, kubelet would write its own
+  # mutable /etc/systemd/logind.conf.d/99-kubelet.conf override or fail GNS
+  # startup entirely (nodeshutdown_manager_linux.go: OverrideInhibitDelay).
   services.logind.settings.Login = {
-    InhibitDelayMaxSec = "60s";
+    InhibitDelayMaxSec = lib.mkDefault config.services.k3s.gracefulNodeShutdown.shutdownGracePeriod;
+  };
+
+  # nixpkgs' logind unit sets restartIfChanged=false and defines no reload,
+  # so logind.conf changes never apply until reboot. On a `nixos-rebuild
+  # switch` onto GNS the running logind would still report the 5s default
+  # and kubelet would drop its own mutable drop-in to compensate. Reload
+  # instead — SIGHUP is exactly what kubelet itself sends logind after
+  # overriding the delay.
+  systemd.services.systemd-logind = {
+    serviceConfig.ExecReload = "${lib.getBin pkgs.util-linux}/bin/kill -HUP $MAINPID";
+    reloadTriggers = [ config.environment.etc."systemd/logind.conf".source ];
   };
 
   # Allow some ports
