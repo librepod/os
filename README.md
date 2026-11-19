@@ -159,6 +159,10 @@ nix run github:nix-community/nixos-anywhere -- --flake .#my-machine root@<ip>
 curl https://raw.githubusercontent.com/librepod/librepod-install/master/librepod-install | bash -x
 ```
 
+**Appliance images over the network (pixiecore):** see [docs/netboot.md](docs/netboot.md)
+for serving the netboot installer and image from a workstation on the LAN —
+no USB stick needed.
+
 ## Testing
 
 ```bash
