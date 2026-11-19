@@ -52,6 +52,7 @@ An image device is `lib.mkImage { device, version, modules }`: `imageModules` (t
 - All packages use `allowUnfree = false`.
 - Scripts use `pkgs.writeShellApplication` with explicit `runtimeInputs` rather than `buildInputs` or ad-hoc PATH manipulation.
 - `lib.mkDefault` is used for values that consumers should override (e.g., disk device in disko, hostname in networking).
+- **Read the pinned source of any upstream module you're about to tweak** before writing config against it: resolve the exact `flake.lock` revision (k3s comes from the separate `k3s-nixpkgs` input) and fetch that file, e.g. `https://raw.githubusercontent.com/NixOS/nixpkgs/<rev>/nixos/modules/services/cluster/rancher/default.nix`. Prefer a dedicated first-class option over hand-rolling values into generic escape hatches (`extraKubeletConfig`, `extraFlags`), and check option names still exist — the release channel removes/renames them (e.g. `services.logind.extraConfig` → `services.logind.settings.Login`). Option docs alone lag and omit wiring; the source shows both.
 
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:1105d646 -->

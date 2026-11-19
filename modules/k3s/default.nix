@@ -67,12 +67,33 @@ in
         "net.ipv4.ip_forward" # traefik needs this
       ];
     };
+    # Graceful node shutdown. Without it kubelet takes no part in reboots:
+    # k3s exits in ~2s, pods are orphaned, and systemd then spends 90s per
+    # pod (default scope TimeoutStopSec) SIGKILLing containers whose PID 1
+    # ignores SIGTERM (e.g. openbao's `sh -ec` wrapper) — reboots hung for
+    # minutes. With this, kubelet stops pods via the normal path (preStop
+    # hooks + grace period) before systemd tears services down.
+    gracefulNodeShutdown = {
+      enable = true;
+      # Ceilings, not fixed delays: kubelet releases the systemd inhibitor as
+      # soon as pods are down. Generous so slow marketplace apps fit inside
+      # the window instead of being force-killed.
+      shutdownGracePeriod = "60s";
+      shutdownGracePeriodCriticalPods = "20s";
+    };
     # Auto-deploy charts for K3S
     # https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/services/cluster/k3s/default.nix
     autoDeployCharts = {
       flux-operator = mkAutoDeployChart (import ./charts/flux-operator.nix);
       flux-instance = mkAutoDeployChart (import ./charts/flux-instance.nix);
     };
+  };
+
+  # kubelet's graceful node shutdown holds a systemd "delay" inhibitor while
+  # it stops pods; logind waits at most InhibitDelayMaxSec (default: 5s) for
+  # it. Must be >= shutdownGracePeriod above or the window is cut short.
+  services.logind.settings.Login = {
+    InhibitDelayMaxSec = "60s";
   };
 
   # Allow some ports
