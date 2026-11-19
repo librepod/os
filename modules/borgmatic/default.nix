@@ -18,12 +18,16 @@
 # Helm's three-way strategic merge preserves externally-scaled replicas on
 # upgrade, so the pre-backup script saves replica counts to a state file and
 # the post-backup script restores them explicitly. See post-backup.sh for the
-# full SSA field-ownership explanation.
+# full SSA field-ownership explanation. The state file lives under /var/lib
+# (persistent): if a reboot interrupts the backup window, suspend flags in
+# etcd and replicas=0 survive while /run does not — borgmatic-recovery.service
+# reruns post-backup at boot while the state file exists (issue #12).
 #
 # Dynamic source directories:
 #   A generate-sources script queries k8s for the PVCs to back up (see
-#   scripts/backup-pvcs.jq, shared with pre-backup), resolves their NFS paths
-#   via the bound PV's spec.nfs.path, and writes them to /run/borgmatic/sources.yaml.
+#   modules/common/backup-hooks/scripts/backup-pvcs.jq, shared with
+#   pre-backup), resolves their NFS paths via the bound PV's spec.nfs.path,
+#   and writes them to /run/borgmatic/sources.yaml.
 #   The base borgmatic config includes this file via <<: !include (deep merge).
 #   Because pkgs.formats.yaml cannot produce the custom <<: !include YAML tag,
 #   we use runCommand to prepend it to the generated config.
@@ -47,6 +51,15 @@
 let
   repoPath = "/media/USB DISK/borg-repo";
   mountPoint = "/media/USB DISK";
+
+  # Shared pre/post-backup hooks + boot recovery unit (issue #12), built for
+  # this tool by modules/common/backup-hooks.
+  backupHooks = import ../common/backup-hooks {
+    inherit pkgs;
+    toolName = "borgmatic";
+    stateFilePath = "/var/lib/borgmatic/scaled-deployments.txt";
+    backupUnitName = "borgmatic.service";
+  };
 
   ensureRepoScript = pkgs.writeShellApplication {
     name = "borgmatic-ensure-repo";
@@ -76,29 +89,13 @@ let
       jq
       coreutils
     ];
-    text = "PVC_FILTER=${./scripts/backup-pvcs.jq}\n" + builtins.readFile ./scripts/generate-sources.sh;
+    text = "PVC_FILTER=${backupHooks.pvcFilter}\n" + builtins.readFile ./scripts/generate-sources.sh;
   };
 
-  preBackupScript = pkgs.writeShellApplication {
-    name = "borgmatic-pre-backup";
-    runtimeInputs = with pkgs; [
-      k3s
-      fluxcd
-      jq
-      coreutils
-    ];
-    text = "PVC_FILTER=${./scripts/backup-pvcs.jq}\n" + builtins.readFile ./scripts/pre-backup.sh;
-  };
-
-  postBackupScript = pkgs.writeShellApplication {
-    name = "borgmatic-post-backup";
-    runtimeInputs = with pkgs; [
-      k3s
-      fluxcd
-      coreutils
-    ];
-    text = builtins.readFile ./scripts/post-backup.sh;
-  };
+  inherit (backupHooks)
+    preBackupScript
+    postBackupScript
+    ;
 
   # Generate structured borgmatic config, then prepend the <<: !include directive.
   # pkgs.formats.yaml cannot produce custom YAML tags (like !include) or unquoted
@@ -176,10 +173,22 @@ in
     after = [
       "k3s.service"
       "network-online.target"
+      # Pure ordering (no wants): serialize with boot recovery in case the
+      # Persistent timer fires a catch-up backup while recovery is restoring.
+      "borgmatic-recovery.service"
     ];
-    serviceConfig.ExecStartPre = [
-      "${pkgs.coreutils}/bin/mkdir -p /run/borgmatic"
-      "${generateSourcesScript}/bin/borgmatic-generate-sources"
-    ];
+    serviceConfig = backupHooks.stopPostConfig // {
+      ExecStartPre = [
+        "${pkgs.coreutils}/bin/mkdir -p /run/borgmatic"
+        "${generateSourcesScript}/bin/borgmatic-generate-sources"
+      ];
+    };
   };
+
+  # Boot-time recovery from a reboot during the backup window (issue #12):
+  # a surviving state file means a backup was interrupted mid-run — the fleet
+  # is at 0 replicas with Flux suspended. The shared recovery unit reruns
+  # post-backup (guarding against a mid-backup `nixos-rebuild switch`) and
+  # retries until the restore fully succeeds.
+  systemd.services.borgmatic-recovery = backupHooks.recoveryService;
 }
