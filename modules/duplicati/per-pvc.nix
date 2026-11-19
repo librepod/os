@@ -74,7 +74,7 @@ in
 
   systemd.services.duplicati-backup-k3s-per-pvc = {
     description = "Duplicati per-PVC backup job for k3s data";
-    serviceConfig = {
+    serviceConfig = backupHooks.stopPostConfig // {
       Type = "oneshot";
       User = "root";
       # Use the per-PVC backup script which handles PVC discovery and backup

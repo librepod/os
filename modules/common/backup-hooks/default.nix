@@ -72,6 +72,22 @@ in
     pvcFilter
     ;
 
+  # Merge into the backup unit's serviceConfig. A backup killed without a
+  # reboot (OOM, SIGKILL, `systemctl stop`) never runs its post hook, so
+  # restore on unit stop; after a normal run the state file is gone and this
+  # is a no-op. At shutdown the backup unit stops before k3s (it is ordered
+  # after it), so the cluster is still up.
+  stopPostConfig = {
+    ExecStopPost = "${pkgs.writeShellScript "${toolName}-stop-post" ''
+      [ -f ${stateFilePath} ] || exit 0
+      exec ${postBackupScript}/bin/${toolName}-post-backup
+    ''}";
+    # `flux resume` waits for reconciliation; the 90 s default would cut the
+    # restore short. If it still times out, the state file stays and boot
+    # recovery or the next pre-backup retries.
+    TimeoutStopSec = "10min";
+  };
+
   # Assign to systemd.services."<toolName>-recovery" from the consuming
   # module. Steps are idempotent, so reruns on a stale file are harmless;
   # ConditionPathExists skips it entirely when no state file exists.

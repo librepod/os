@@ -177,10 +177,12 @@ in
       # Persistent timer fires a catch-up backup while recovery is restoring.
       "borgmatic-recovery.service"
     ];
-    serviceConfig.ExecStartPre = [
-      "${pkgs.coreutils}/bin/mkdir -p /run/borgmatic"
-      "${generateSourcesScript}/bin/borgmatic-generate-sources"
-    ];
+    serviceConfig = backupHooks.stopPostConfig // {
+      ExecStartPre = [
+        "${pkgs.coreutils}/bin/mkdir -p /run/borgmatic"
+        "${generateSourcesScript}/bin/borgmatic-generate-sources"
+      ];
+    };
   };
 
   # Boot-time recovery from a reboot during the backup window (issue #12):
